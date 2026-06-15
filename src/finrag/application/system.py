@@ -1,0 +1,796 @@
+"""FinRAG 系统编排"""
+
+from __future__ import annotations
+
+import logging
+from collections import Counter
+from pathlib import Path
+from threading import RLock
+from typing import Any, Callable, Dict, List, Optional
+
+from dotenv import load_dotenv
+
+from finrag.core.config import PROJECT_ROOT, RAGConfig
+from finrag.core.node_schema import TextNode
+from finrag.generation import GenerationIntegrationModule
+from finrag.application.document_lifecycle import DocumentLifecycleService
+from finrag.application.knowledge_base import KnowledgeBaseService
+from finrag.application.llamaindex_engines import build_knowledge_engines, build_top_router
+from finrag.application.qa_pipeline import QAPipelineService
+from finrag.application.source_files import ManagedSourceFileService
+from finrag.indexing import (
+    DataPreparationModule,
+    IndexConstructionModule,
+)
+from finrag.storage import (
+    PostgreSQLBM25StateStore,
+    PostgreSQLIndexManifestStore,
+    PostgreSQLLlamaIndexDocumentStore,
+)
+from finrag.ingestion import DocumentRecord, PostgreSQLDocumentRegistry, compute_content_hash
+from finrag.ingestion.parsers import utc_now_iso
+from finrag.retrieval import build_reranker
+from finrag.retrieval.tokenization import tokenize_chinese_text
+
+
+def _load_environment(project_root: Path = PROJECT_ROOT) -> None:
+    """
+    从项目根目录或当前工作目录加载 .env 配置
+    Args:
+        project_root: 项目根路径
+    Returns:
+        无返回值，环境变量写入当前进程
+    """
+    project_env = project_root / ".env"
+    if project_env.exists():
+        load_dotenv(project_env)
+        return
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        load_dotenv(cwd_env)
+
+
+_load_environment() # 加载环境变量
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s") # 配置日志记录
+logging.getLogger("jieba").setLevel(logging.WARNING) # 设置 jieba 日志级别为 WARNING
+
+
+class FinRAGSystem:
+    """金融资料库 RAG 系统"""
+
+    def __init__(self, config: Optional[RAGConfig] = None):
+        """
+        初始化 FinRAG 系统编排器
+        Args:
+            config: 可选运行配置，未提供时从环境变量读取
+        """
+        # 初始化系统配置
+        self.config = config or RAGConfig.from_env()
+        # 初始化系统模块
+        self.data_module: Optional[DataPreparationModule] = None
+        # 索引构建模块
+        self.index_module: Optional[IndexConstructionModule] = None
+        # 生成模块
+        self.generation_module: Optional[GenerationIntegrationModule] = None
+
+        # 知识查询引擎
+        self.knowledge_query_engine: Optional[Any] = None
+        # 自动合并检索器
+        self.auto_merge_retriever: Optional[Any] = None
+        # 混合检索器
+        self.hybrid_retriever: Optional[Any] = None
+        # 摘要索引
+        self.summary_index: Optional[Any] = None
+        # 顶部路由引擎
+        self.router_engine: Optional[Any] = None
+
+
+        # 文档注册表
+        self.document_registry = PostgreSQLDocumentRegistry(self.config.database_url)
+        # LlamaIndex 文档存储适配器
+        self.llama_docstore = PostgreSQLLlamaIndexDocumentStore(self.config.database_url)
+        # BM25 状态存储
+        self.bm25_store = PostgreSQLBM25StateStore(self.config.database_url)
+        # 索引清单存储
+        self.manifest_store = PostgreSQLIndexManifestStore(self.config.database_url)
+        # 源文件管理服务
+        self.source_files = ManagedSourceFileService(self.config, self.document_registry)
+        
+        # 知识库服务
+        self.knowledge_base = self._default_knowledge_base()
+        # 问答管道服务
+        self.qa_pipeline = self._default_qa_pipeline()
+        # 文档生命周期服务
+        self.document_lifecycle = self._default_document_lifecycle()
+        
+        # 串行化索引写操作，避免 Milvus、NodeStore 和注册表状态交叉写入
+        self._write_lock = RLock()
+        # 检索结果 reranker 模块
+        self.reranker = build_reranker(
+            self.config.reranker_provider,
+            self.config.reranker_model,
+            self.config.reranker_endpoint,
+            self.config.reranker_api_key,
+            self.config.reranker_top_n,
+        )
+
+    def initialize_system(self) -> None:
+        """
+        初始化数据准备、索引构建和生成模块
+        Returns:
+            无返回值，初始化后的模块写入实例属性
+        """
+        self.knowledge_base.initialize_system()
+
+    def build_knowledge_base(self) -> None:
+        """
+        加载文档、构建层级节点、创建或复用向量索引，并初始化检索模块
+        Returns:
+            无返回值，资料库状态写入实例属性
+        """
+        self.knowledge_base.build_knowledge_base()
+
+    def ensure_knowledge_base_ready(self) -> None:
+        """
+        确保 knowledge 问答所需的数据、索引和检索模块已经可用
+        """
+        self.knowledge_base.ensure_knowledge_base_ready()
+
+    def rebuild_from_sources(self) -> dict:
+        """
+        从源文档强制全量重建 PostgreSQL 节点/BM25 状态和 Milvus collection
+        Returns:
+            重建摘要，供 CLI 和运维任务展示
+        """
+        return self.knowledge_base.rebuild_from_sources()
+
+    def ready(self) -> dict:
+        """
+        返回系统是否完成检索模块初始化及当前资料库统计
+        Returns:
+            包含 ready、status、文档数和节点数的状态字典
+        """
+        stats = self.get_statistics()
+        retrieval_ready = self.knowledge_query_engine is not None
+        return {
+            "ready": retrieval_ready,
+            "status": "ready" if retrieval_ready else "not_ready",
+            "total_documents": int(stats.get("total_documents", 0) or 0),
+            "total_chunks": int(stats.get("total_chunks", 0) or 0),
+            "last_error": None,
+        }
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        汇总资料库统计，优先使用文档注册表补齐从节点存储恢复时缺失的文档计数
+        Returns:
+            文档、节点和文件类型统计字典
+        """
+        # 优先使用数据准备模块的统计信息
+        stats = self.data_module.get_statistics() if self.data_module is not None else {}
+        payload = dict(stats)
+        # 从文档注册表获取公开文档记录
+        documents = self.document_registry.list_public()
+        if documents:
+            # 统计文档类型分布，并补齐文档总数和类型分布信息
+            file_types = Counter(str(document.get("file_type") or "unknown") for document in documents)
+            payload["total_documents"] = len(documents)
+            payload["file_types"] = dict(file_types)
+        else:
+            # 如果没有文档记录，补齐默认统计信息
+            payload.setdefault("total_documents", 0)
+            payload.setdefault("file_types", {})
+        # 兜底统计信息
+        payload.setdefault("total_chunks", 0)
+        payload.setdefault("avg_chunk_size", 0)
+        return payload
+
+    def list_documents(self) -> List[dict]:
+        """
+        列出文档注册表中的公开文档记录
+        Returns:
+            文档状态字典列表
+        """
+        return self.document_registry.list_public()
+
+    def _default_qa_pipeline(self) -> QAPipelineService:
+        """
+        创建默认问答 pipeline 服务
+        Returns:
+            绑定当前系统实例的 QAPipelineService
+        """
+        return QAPipelineService(self)
+
+    def _default_knowledge_base(self) -> KnowledgeBaseService:
+        """
+        创建默认知识库服务
+        Returns:
+            绑定当前系统实例的 KnowledgeBaseService
+        """
+        return KnowledgeBaseService(self)
+
+    def _default_document_lifecycle(self) -> DocumentLifecycleService:
+        """
+        创建默认文档生命周期服务
+        Returns:
+            绑定当前系统实例的 DocumentLifecycleService
+        """
+        return DocumentLifecycleService(self)
+
+    def _managed_source_files(self) -> ManagedSourceFileService:
+        """
+        获取源文件服务，并同步可能被测试或调用方替换的文档注册表
+        Returns:
+            当前系统使用的源文件管理服务
+        """
+        self.source_files.document_registry = self.document_registry
+        return self.source_files
+
+    def prepare_uploaded_file(
+        self,
+        file_path: Path,
+        filename: str,
+        knowledge_base_id: str,
+    ) -> dict:
+        """
+        处理上传文件的去重、落盘和文档注册，尚不强制同步建索引
+        Args:
+            file_path: 上传临时文件路径
+            filename: 用户侧原始文件名
+            knowledge_base_id: 目标资料库 ID
+        Returns:
+            文档注册记录的公开字典
+        """
+        return self.document_lifecycle.prepare_uploaded_file(file_path, filename, knowledge_base_id)
+
+    def index_registered_document(self, document_id: str) -> dict:
+        """
+        对已注册文档执行单文档增量索引，并更新该文档索引状态
+        Args:
+            document_id: 待索引文档 ID
+        Returns:
+            更新后的文档公开状态
+        """
+        return self.document_lifecycle.index_registered_document(document_id)
+
+    def ingest_uploaded_file(
+        self,
+        file_path: Path,
+        filename: str,
+        knowledge_base_id: str,
+    ) -> dict:
+        """
+        完成上传文件注册并同步构建索引
+        Args:
+            file_path: 上传临时文件路径
+            filename: 用户侧原始文件名
+            knowledge_base_id: 目标资料库 ID
+        Returns:
+            索引完成后的文档公开状态
+        """
+        return self.document_lifecycle.ingest_uploaded_file(file_path, filename, knowledge_base_id)
+
+    def delete_document(self, document_id: str) -> dict:
+        """
+        删除托管文档源文件，并按 document_id 增量删除索引
+        Args:
+            document_id: 待删除文档 ID
+        Returns:
+            删除后的文档公开状态
+        """
+        return self.document_lifecycle.delete_document(document_id)
+
+    def reindex_document(self, document_id: str) -> dict:
+        """
+        对指定文档重新执行解析和索引构建
+        Args:
+            document_id: 待重建索引的文档 ID
+        Returns:
+            重建后的文档公开状态
+        """
+        return self.document_lifecycle.reindex_document(document_id)
+
+    def ask_question(
+        self,
+        question: str,
+        return_sources: bool = False,
+        return_trace: bool = False,
+        knowledge_base_id: Optional[str] = None,
+        event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
+        cancel_event: Any = None,
+    ):
+        """
+        执行完整 RAG 问答流程：查询分析、检索、置信度门控、证据扩展和生成
+        Args:
+            question: 用户问题
+            return_sources: 是否返回来源证据
+            return_trace: 是否返回调试 trace
+            knowledge_base_id: 可选资料库过滤条件
+            event_sink: 可选 SSE 事件回调
+            cancel_event: 可选取消信号
+        Returns:
+            FinRAGResponse 问答响应对象
+        """
+        return self.qa_pipeline.ask_question(
+            question,
+            return_sources=return_sources,
+            return_trace=return_trace,
+            knowledge_base_id=knowledge_base_id,
+            event_sink=event_sink,
+            cancel_event=cancel_event,
+        )
+
+    def _ensure_modules(self) -> None:
+        """
+        确保核心模块已初始化，并同步最新文档注册表引用
+        Returns:
+            无返回值
+        """
+        if self.data_module is None or self.index_module is None or self.generation_module is None:
+            self.initialize_system()
+        # 断言模块已初始化，否则抛出异常
+        assert self.data_module is not None
+        # 同步文档注册表引用，确保最新状态被使用
+        self.data_module.document_registry = self.document_registry
+
+    def _build_expected_manifest(self) -> Dict[str, Any]:
+        """基于当前配置和活跃文档构建索引清单"""
+        assert self.index_module is not None
+        # 从文档注册表获取所有公开文档
+        public_docs = self.document_registry.list_public() if self.document_registry is not None else []
+        # 从数据模块获取所有叶子节点
+        leaf_nodes = getattr(self.data_module, "chunks", None) or []
+        return self.index_module.build_manifest(
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
+            knowledge_base_id=self.config.knowledge_base_id,
+            llamaindex_index_store_dir=self.config.llamaindex_index_store_dir, # LlamaIndex 索引存储目录
+            index_ids=["finrag-auto-merge"], # 索引 ID 列表
+            document_count=len(public_docs), # 文档数量
+            node_count=len(leaf_nodes), # 叶子节点数量
+            summary_document_count=len(public_docs) if self.summary_index is not None else 0, # 摘要文档数量
+        )
+
+    def _full_rebuild_locked(self, *, sync_source_registry: bool = False) -> None:
+        """
+        全量重建索引
+        Args:
+            sync_source_registry: 是否同步从源注册目录加载文档
+        Returns:
+            无返回值
+        """
+        self._ensure_modules()
+        assert self.data_module is not None
+        assert self.index_module is not None
+
+        restore_registry = self.data_module.document_registry
+        # 如果同步从源注册目录加载文档，先清空数据模块的文档注册表
+        if sync_source_registry:
+            self.data_module.document_registry = None
+
+        try:
+            # 加载文档
+            self.data_module.load_documents()
+        finally:
+            if sync_source_registry:
+                # 恢复数据模块的文档注册表
+                self.data_module.document_registry = restore_registry
+
+        # 如果没有文档，直接清空索引
+        if not self.data_module.documents:
+            # 清空索引后返回的空索引对象
+            vector_index = self.index_module.clear_index(storage_context=self.data_module.storage_context)
+            # 保存空清单
+            self.index_module.save_manifest(self._build_expected_manifest())
+            # 刷新检索
+            self._refresh_retrieval(vector_index, [])
+            return
+
+        leaf_nodes = self._rebuild_via_pipeline(sync_source_registry=sync_source_registry)
+        # 保存索引清单
+        self.index_module.save_manifest(self._build_expected_manifest())
+        if leaf_nodes:
+            # 加载索引
+            vector_index = self.index_module.load_index(
+                self._build_expected_manifest(),
+                storage_context=self.data_module.storage_context,
+            )
+            if vector_index is None:
+                # 如果清单不匹配，重新构建索引
+                vector_index = self.index_module.build_vector_index(
+                    leaf_nodes, storage_context=self.data_module.storage_context, reset=False,
+                )
+        else:
+            # 如果没有叶子节点，清空索引
+            vector_index = self.index_module.clear_index(storage_context=self.data_module.storage_context)
+        # 刷新检索结果
+        self._refresh_retrieval(vector_index, leaf_nodes or [])
+
+    def _rebuild_via_pipeline(self, *, sync_source_registry: bool = False) -> list:
+        """
+        IngestionPipeline 重建索引流程
+        Args:
+            sync_source_registry: 是否同步从源注册目录加载文档
+        Returns:
+            新构建的叶子节点列表
+        """
+        from llama_index.core.node_parser import get_leaf_nodes
+        from finrag.indexing.nodes import build_ingestion_pipeline
+
+        vector_store = self.index_module.init_collection(reset=True)
+        # 是否使用语义分块
+        use_semantic = getattr(self.config, "use_semantic_chunking", False)
+        # 获取嵌入模型
+        embed_model = getattr(self.index_module, "embed_model", None)
+        if embed_model is None:
+            raise RuntimeError("embed_model 未初始化，无法使用 pipeline")
+
+        # 构建 IngestionPipeline
+        pipeline = build_ingestion_pipeline(
+            self.data_module, embed_model, vector_store,
+            self.llama_docstore,
+            use_semantic_chunking=use_semantic,
+        )
+        # 运行 IngestionPipeline，获取所有节点
+        all_nodes = list(pipeline.run(documents=self.data_module.documents, show_progress=True))
+        # 从所有节点中提取叶子节点
+        leaf_nodes: list = get_leaf_nodes(all_nodes)
+        self.data_module.all_nodes = all_nodes
+        self.data_module.chunks = leaf_nodes
+
+        # 如果同步从源注册目录加载文档，重写文档注册表
+        if sync_source_registry:
+            self._replace_registry_from_source_documents(leaf_nodes)
+        # 重置 BM25 模型
+        self._replace_bm25_all_locked(leaf_nodes)
+        return leaf_nodes
+
+    def _replace_registry_from_source_documents(self, leaf_nodes: List[TextNode]) -> None:
+        """
+        根据源目录加载结果重写文档注册表
+        Args:
+            leaf_nodes: 全量重建得到的叶子节点列表
+        Returns:
+            无返回值
+        """
+        assert self.data_module is not None
+        upload_time = utc_now_iso()
+
+        # 统计每个文档的分块数量
+        chunk_count_by_document = Counter(
+            str((node.metadata or {}).get("document_id") or "")
+            for node in leaf_nodes
+            if (node.metadata or {}).get("document_id")
+        )
+        records: Dict[str, DocumentRecord] = {}
+        for doc in self.data_module.documents:
+            metadata = doc.metadata or {}
+            document_id = str(metadata.get("document_id") or "")
+            source_path = str(metadata.get("source_path") or "")
+            if not document_id or not source_path or document_id in records:
+                continue
+            path = Path(source_path)
+            records[document_id] = DocumentRecord(
+                document_id=document_id,
+                source_path=source_path,
+                filename=str(metadata.get("filename") or path.name),
+                file_type=str(metadata.get("file_type") or path.suffix.lower().lstrip(".")),
+                content_hash=compute_content_hash(path),
+                knowledge_base_id=str(metadata.get("knowledge_base_id") or self.config.knowledge_base_id),
+                status="indexed",
+                chunk_count=int(chunk_count_by_document.get(document_id, 0)),
+                upload_time=upload_time,
+            )
+        self.document_registry.records = records
+        self.document_registry.save()
+
+    def _replace_bm25_all_locked(self, leaf_nodes: List[TextNode]) -> None:
+        """
+        用当前全部叶子节点重写 BM25 稀疏状态
+        Args:
+            leaf_nodes: 当前资料库全部叶子节点
+        Returns:
+            无返回值
+        """
+        if self.bm25_store is None:
+            return
+        # 清空 BM25 稀疏状态
+        self.bm25_store.clear()
+        # 按文档 ID 分组叶子节点
+        leaf_nodes_by_document: Dict[str, List[TextNode]] = {}
+        for node in leaf_nodes:
+            document_id = str((node.metadata or {}).get("document_id") or "")
+            if document_id:
+                leaf_nodes_by_document.setdefault(document_id, []).append(node)
+        # 逐文档写入 BM25 稀疏状态，确保同一文档的分块写入操作连续，避免跨文档交叉写入导致的状态不一致问题
+        for document_id, document_leaf_nodes in leaf_nodes_by_document.items():
+            self._replace_bm25_document_chunks_locked(document_id, document_leaf_nodes)
+
+    def _replace_bm25_document_chunks_locked(self, document_id: str, leaf_nodes: List[TextNode]) -> None:
+        """
+        重写单个文档的 BM25 分块词频状态
+        Args:
+            document_id: 待更新的文档 ID
+            leaf_nodes: 该文档的叶子节点列表
+        Returns:
+            无返回值
+        """
+        if self.bm25_store is None:
+            return
+        # 初始化分块词频字典，键为分块 ID，值为词频字典，键为词，值为词频
+        chunk_token_counts: Dict[str, Dict[str, int]] = {}
+        # 遍历该文档的所有叶子节点，统计每个分块的词频
+        for node in leaf_nodes:
+            metadata = node.metadata or {}
+            chunk_id = str(metadata.get("chunk_id") or node.node_id)
+            tokens = tokenize_chinese_text(node.get_content())
+            chunk_token_counts[chunk_id] = dict(Counter(tokens))
+        # 重写该文档的 BM25 分块词频状态
+        self.bm25_store.replace_document_chunks(document_id, chunk_token_counts)
+
+    def _ensure_incremental_index_ready_locked(self) -> None:
+        """
+        确保增量索引状态与当前文档注册表一致
+        """
+        self._ensure_modules()
+        assert self.data_module is not None
+        assert self.index_module is not None
+
+        # 构建预期索引清单
+        expected_manifest = self._build_expected_manifest()
+
+        # 如果索引清单与预期清单不匹配，执行全量重建
+        if self.index_module.load_manifest() is not None and not self.index_module.manifest_matches(expected_manifest):
+            self._full_rebuild_locked()
+            return
+        
+        # 加载当前资料库全部叶子节点
+        leaf_nodes = self._load_leaf_nodes_from_docstore()
+        # 加载当前索引状态
+        vector_index = self.index_module.load_index(expected_manifest, storage_context=self.data_module.storage_context)
+        # 如果索引状态为空且有叶子节点，构建索引
+        if vector_index is None and leaf_nodes:
+            vector_index = self.index_module.build_vector_index(
+                leaf_nodes, storage_context=self.data_module.storage_context, reset=True,
+            )
+        # 保存当前索引状态
+        self.index_module.save_manifest(self._build_expected_manifest())
+        if vector_index is not None:
+            self._refresh_retrieval(vector_index, leaf_nodes)
+
+    def _index_document_locked(self, document_id: str, *, retire_replacements: bool) -> dict:
+        """
+        对单个注册文档执行解析、向量写入、docstore 写入和检索刷新
+        Args:
+            document_id: 待索引的文档 ID
+            retire_replacements: 是否删除旧索引条目，保留新索引条目
+        Returns:
+            公开文档记录
+        """
+        # 确保模块已初始化
+        self._ensure_modules()
+        assert self.data_module is not None
+        assert self.index_module is not None
+        
+        # 获取文档记录
+        record = self.document_registry.get(document_id)
+        # 解析文档内容，生成节点
+        all_nodes, leaf_nodes = self.data_module.chunk_single_document(record)
+        if not all_nodes:
+            raise ValueError(f"文档 {document_id!r} 未生成可索引节点")
+
+        self._ensure_incremental_index_ready_locked()
+
+        # 加载当前资料库全部节点
+        existing_nodes = self.llama_docstore.load_all_nodes() if self.llama_docstore is not None else []
+        # 筛选出当前文档的所有节点
+        previous_document_nodes = [node for node in existing_nodes if (node.metadata or {}).get("document_id") == document_id]
+        # 筛选出其他文档的所有节点
+        stored_nodes = [node for node in existing_nodes if (node.metadata or {}).get("document_id") != document_id]
+        # 合并所有节点
+        self.data_module.load_prepared_nodes(stored_nodes + all_nodes)
+        if self.llama_docstore is not None:
+            # 写入当前文档所有节点到 docstore
+            self.llama_docstore.add_documents(all_nodes)
+        # 重写当前文档的 BM25 分块词频状态
+        self._replace_bm25_document_chunks_locked(document_id, leaf_nodes)
+
+        try:
+            # 删除当前文档的所有向量索引条目
+            self.index_module.delete_vectors_by_document_id(document_id)
+            # 写入当前文档所有叶子节点到索引
+            vector_index = self.index_module.upsert_leaf_nodes(leaf_nodes, storage_context=self.data_module.storage_context)
+        except Exception:
+            if self.bm25_store is not None:
+                # 删除当前文档的所有 BM25 索引条目
+                self.bm25_store.delete_document(document_id)
+            if self.llama_docstore is not None and previous_document_nodes:
+                # 写入当前文档所有节点到 docstore
+                self.llama_docstore.add_documents(previous_document_nodes)
+            elif self.llama_docstore is not None:
+                # 删除当前文档的所有节点store 条目
+                self.llama_docstore.delete_nodes_by_document(document_id)
+            raise
+        # 刷新索引
+        self._reload_from_store_and_refresh_locked(vector_index)
+        # 标记文档为已索引
+        self.document_registry.mark_indexed(document_id, chunk_count=len(leaf_nodes))
+        if retire_replacements:
+            # 删除旧索引条目
+            self._retire_replaced_documents_locked(record)
+        # 返回公开文档记录
+        return self._public_document(document_id)
+
+    def _delete_document_index_entries_locked(self, document_id: str) -> None:
+        """删除指定 document_id 的向量、BM25 和 docstore 条目"""
+        assert self.index_module is not None
+        # 删除向量索引条目
+        self.index_module.delete_vectors_by_document_id(document_id)
+        # 删除 BM25 索引条目
+        if self.bm25_store is not None:
+            self.bm25_store.delete_document(document_id)
+        # 删除 docstore 条目
+        if self.llama_docstore is not None:
+            self.llama_docstore.delete_nodes_by_document(document_id)
+
+    def _load_leaf_nodes_from_docstore(self) -> List[TextNode]:
+        """从 llama_docstore 恢复全部层级节点并返回叶子节点"""
+        assert self.data_module is not None
+
+        if self.llama_docstore is not None:
+            all_nodes = self.llama_docstore.load_all_nodes()
+            if all_nodes:
+                # 返回所有叶子节点
+                return self.data_module.load_prepared_nodes(all_nodes)
+        return []
+
+    def _reload_from_store_and_refresh_locked(self, vector_index: Optional[Any] = None) -> Any:
+        """
+        从 docstore 重新加载叶子节点并刷新检索引擎
+        Args:
+            vector_index: 可选的向量索引条目，用于更新索引
+        Returns:
+            更新后的向量索引条目
+        """
+        assert self.data_module is not None
+        assert self.index_module is not None
+        
+        # 从 docstore 加载所有叶子节点
+        leaf_nodes = self._load_leaf_nodes_from_docstore()
+        # 构建索引清单
+        manifest = self._build_expected_manifest()
+        # 加载索引
+        loaded_index = self.index_module.load_index(manifest, storage_context=self.data_module.storage_context)
+
+        if loaded_index is not None:
+            vector_index = loaded_index
+        elif vector_index is None:
+            if leaf_nodes:
+                # 构建向量索引
+                vector_index = self.index_module.build_vector_index(
+                    leaf_nodes, storage_context=self.data_module.storage_context, reset=True,
+                )
+            else:
+                # 清空索引，返回空索引句柄
+                vector_index = self.index_module.clear_index(storage_context=self.data_module.storage_context)
+        # 保存索引清单
+        self.index_module.save_manifest(manifest)
+        # 刷新检索引擎
+        self._refresh_retrieval(vector_index, leaf_nodes)
+        return vector_index
+
+    def _retire_replaced_documents_locked(self, indexed_record: Any) -> None:
+        """
+        新同名文档索引成功后，删除同资料库同名旧文档的文件、向量和节点
+        Args:
+            indexed_record: 新索引成功的文档记录
+        Returns:
+            无返回值
+        """
+        # 查找所有同资料库同名旧文档的记录
+        replaced_records = [
+            record
+            for record in self.document_registry.records.values()
+            if record.document_id != indexed_record.document_id
+            and record.knowledge_base_id == indexed_record.knowledge_base_id
+            and record.filename == indexed_record.filename
+            and record.status != "deleted"
+        ]
+        if not replaced_records:
+            return
+        for record in replaced_records:
+            # 删除旧文档的所有向量索引
+            self._delete_document_index_entries_locked(record.document_id)
+            # 删除旧文档的托管文件
+            self._managed_source_files().delete_managed_source_file(record.source_path)
+            # 标记旧文档已删除
+            self.document_registry.mark_deleted(record.document_id)
+        # 刷新检索状态
+        self._reload_from_store_and_refresh_locked()
+
+    def _refresh_retrieval(self, vector_index: Any, leaf_nodes: List[TextNode]) -> None:
+        """
+        用当前向量索引和叶子节点重建全部 LlamaIndex 检索和查询引擎
+        Args:
+            vector_index: 向量索引对象
+            leaf_nodes: 叶子节点列表
+        Returns:
+            无返回值
+        """
+        assert self.data_module is not None
+        # 如果没有叶子节点，清空所有检索器和引擎
+        if not leaf_nodes:
+            self.hybrid_retriever = None
+            self.auto_merge_retriever = None
+            self.knowledge_query_engine = None
+            self.summary_index = None
+            self.router_engine = None
+            return
+        # 从数据模块获取所有文档
+        documents = getattr(self.data_module, "documents", None)
+        # 从索引模块获取嵌入模型
+        embed_model = getattr(self.index_module, "embed_model", None) if self.index_module is not None else None
+        # 构建知识引擎组装器
+        engines = build_knowledge_engines(
+            vector_index=vector_index, # 向量索引对象
+            storage_context=self.data_module.storage_context, # 存储上下文
+            config=self.config, # 系统配置
+            reranker=self.reranker, # 重排序模型
+            llm=getattr(self.generation_module, "llm", None) if self.generation_module is not None else None, # LLM 模型
+            documents=list(documents) if documents else None, # 文档列表
+            embed_model=embed_model, # 嵌入模型
+        )
+        self.hybrid_retriever = engines.hybrid_retriever
+        self.auto_merge_retriever = engines.auto_merge_retriever
+        self.summary_index = engines.summary_index
+        self.knowledge_query_engine = engines.knowledge_query_engine
+        llm = getattr(self.generation_module, "llm", None) if self.generation_module is not None else None
+        self.router_engine = build_top_router(system=self, llm=llm)
+
+    def _public_document(self, document_id: str) -> dict:
+        """
+        获取指定文档对外展示的注册表记录
+        Args:
+            document_id: 文档 ID
+        Returns:
+            文档公开状态字典
+        """
+        for record in self.document_registry.list_public():
+            if record["document_id"] == document_id:
+                return record
+        return self.document_registry.get(document_id).to_dict()
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        """
+        将异常格式化为适合写入文档注册表的错误文本
+        Args:
+            exc: 捕获到的异常
+        Returns:
+            包含异常类型和消息的字符串
+        """
+        return f"{exc.__class__.__name__}: {exc}"
+
+    def run_interactive(self):
+        """
+        启动命令行交互式问答循环
+        Returns:
+            无返回值，结果直接输出到终端
+        """
+        print("=" * 60)
+        print("FinRAG 金融资料库问答系统")
+        print("=" * 60)
+        self.initialize_system()
+        self.build_knowledge_base()
+        while True:
+            try:
+                question = input("\n您的问题: ").strip()
+                if question.lower() in {"退出", "quit", "exit"}:
+                    break
+                if not question:
+                    print("请输入问题内容，或输入'退出'结束")
+                    continue
+                response = self.ask_question(question, return_sources=True)
+                print(response.answer)
+            except (KeyboardInterrupt, EOFError):
+                break
