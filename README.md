@@ -26,53 +26,53 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 
 ## Capabilities
 
-| 模块       | 能力                                                                                                            |
-| ---------- | --------------------------------------------------------------------------------------------------------------- |
-| 文档生命周期 | 支持 PDF / Markdown / TXT / DOCX 上传、同步或异步索引、列表、删除、重建索引，按 `content_hash` 识别重复内容       |
-| 文档建模   | 使用稳定 `document_id` / `chunk_id`、资料库 ID、页码、文件类型和父级/根级节点关系，保证检索、回源和引用一致       |
-| 索引存储   | leaf nodes 写入 Milvus dense+sparse collection，完整层级节点写入 PostgreSQL docstore，BM25 统计和 manifest 独立持久化 |
-| 检索增强   | 基于 Milvus native hybrid、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集 |
-| 可信生成   | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段 |
-| 可观测性   | SSE 事件流覆盖分析、路由、来源、token、完成与错误；trace 记录 route、retriever、retrieved/evidence nodes 和耗时  |
-| 质量评估   | 提供 hit@k、MRR、keyword coverage 与 Ragas 指标，评估召回命中、排序质量、上下文质量和回答忠实性                  |
-| Web 工作台 | React/Vite 工作台提供 FinRAG 资料库状态、拖拽上传、流式问答、来源引用、链路详情和调试开关                        |
+| 模块         | 能力                                                                                                                  |
+| ------------ | --------------------------------------------------------------------------------------------------------------------- |
+| 文档生命周期 | 支持 PDF / Markdown / TXT / DOCX 上传、同步或异步索引、列表、删除、重建索引，按 `content_hash` 识别重复内容         |
+| 文档建模     | 使用稳定 `document_id` / `chunk_id`、资料库 ID、页码、文件类型和父级/根级节点关系，保证检索、回源和引用一致       |
+| 索引存储     | leaf nodes 写入 Milvus dense+sparse collection，完整层级节点写入 PostgreSQL docstore，BM25 统计和 manifest 独立持久化 |
+| 检索增强     | 基于 Milvus native hybrid、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集      |
+| 可信生成     | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段   |
+| 可观测性     | SSE 事件流覆盖分析、路由、来源、token、完成与错误；trace 记录 route、retriever、retrieved/evidence nodes 和耗时       |
+| 质量评估     | 提供 hit@k、MRR、keyword coverage 与 Ragas 指标，评估召回命中、排序质量、上下文质量和回答忠实性                       |
+| Web 工作台   | React/Vite 工作台提供 FinRAG 资料库状态、拖拽上传、流式问答、来源引用、链路详情和调试开关                             |
 
 ## Architecture
 
 ```text
-                    ┌──────────────────────────┐
-                    │ React / Vite Workbench   │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │ FastAPI                  │
-                    │ ready / documents / ask  │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │ RAGService / FinRAGSystem│
-                    └────────────┬─────────────┘
-                                 │
-        ┌────────────────────────┼────────────────────────┐
-        │                        │                        │
-┌───────▼────────┐      ┌────────▼─────────┐      ┌───────▼────────┐
-│ Document        │      │ PostgreSQL       │      │ Milvus         │
-│ lifecycle       │      │ docs/nodes/BM25  │      │ dense+sparse   │
-└───────┬────────┘      │ manifest         │      │ leaf vectors   │
-        │               └────────┬─────────┘      └───────┬────────┘
-        │                        │                        │
-        │               ┌────────▼─────────┐      ┌───────▼────────┐
-        │               │ Redis parent/root│      │ Native Hybrid  │
-        │               │ node cache       │      │ Retriever      │
-        │               └────────┬─────────┘      └───────┬────────┘
-        │                        │                        │
-        └────────────────────────┴───────────────┬────────┘
-                                                 │
-                                      ┌──────────▼──────────┐
-                                      │ LlamaIndex Router   │
-                                      │ Auto Merge / Rerank │
-                                      │ Grounded Answer     │
-                                      └─────────────────────┘
+                    ┌──────────────────────────────┐
+                    │ React / Vite Workbench       │
+                    └───────────────┬──────────────┘
+                                    │
+                    ┌───────────────▼──────────────┐
+                    │ FastAPI                      │
+                    │ ready / documents / ask      │
+                    └───────────────┬──────────────┘
+                                    │
+                    ┌───────────────▼──────────────┐
+                    │ RAGService / FinRAGSystem    │
+                    └───────────────┬──────────────┘
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        │                           │                           │
+┌───────▼────────────┐      ┌───────▼────────────┐      ┌───────▼────────────┐
+│ Document lifecycle │      │ PostgreSQL         │      │ Milvus             │
+│ managed sources    │      │ docs/nodes/BM25    │      │ dense+sparse       │
+│ upload/reindex     │      │ manifest           │      │ leaf vectors       │
+└───────┬────────────┘      └───────┬────────────┘      └───────┬────────────┘
+        │                           │                           │
+        │                   ┌───────▼────────────┐      ┌───────▼────────────┐
+        │                   │ Redis              │      │ Native Hybrid      │
+        │                   │ parent/root cache  │      │ Retriever          │
+        │                   └───────┬────────────┘      └───────┬────────────┘
+        │                           │                           │
+        └───────────────────────────┼───────────────────────────┘
+                                    │
+                    ┌───────────────▼──────────────┐
+                    │ LlamaIndex Router            │
+                    │ Auto Merge / Rerank          │
+                    │ Grounded Answer              │
+                    └──────────────────────────────┘
 ```
 
 ## RAG Pipeline
@@ -187,16 +187,16 @@ npm run build
 
 ## API Overview
 
-| Method     | Path                                 | Description                            |
-| ---------- | ------------------------------------ | -------------------------------------- |
-| `GET`    | `/health`                          | 返回 `{"status":"ok"}`，用于服务存活检查 |
-| `GET`    | `/ready`                           | 返回资料库就绪状态、文档数、分块数和错误信息 |
-| `POST`   | `/warmup`                          | 主动初始化 RAG 系统并返回 ready 状态 |
-| `GET`    | `/documents`                       | 返回公开文档列表和索引状态 |
+| Method     | Path                                 | Description                                                                                     |
+| ---------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `GET`    | `/health`                          | 返回 `{"status":"ok"}`，用于服务存活检查                                                      |
+| `GET`    | `/ready`                           | 返回资料库就绪状态、文档数、分块数和错误信息                                                    |
+| `POST`   | `/warmup`                          | 主动初始化 RAG 系统并返回 ready 状态                                                            |
+| `GET`    | `/documents`                       | 返回公开文档列表和索引状态                                                                      |
 | `POST`   | `/documents/upload`                | multipart 上传 PDF / Markdown / TXT / DOCX，表单字段支持 `knowledge_base_id`、`async_index` |
-| `DELETE` | `/documents/{document_id}`         | 删除文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点 |
-| `POST`   | `/documents/{document_id}/reindex` | 对指定文档重新解析并写入索引 |
-| `POST`   | `/ask`                             | 发起 `text/event-stream` 流式资料库问答 |
+| `DELETE` | `/documents/{document_id}`         | 删除文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点                                    |
+| `POST`   | `/documents/{document_id}/reindex` | 对指定文档重新解析并写入索引                                                                    |
+| `POST`   | `/ask`                             | 发起 `text/event-stream` 流式资料库问答                                                       |
 
 ### Ask Request
 
@@ -264,14 +264,14 @@ data: {"response":{...},"final_decision":"generate"}
 
 前端工作台依赖以下响应字段，字段名与 FastAPI/Pydantic schema 保持一致：
 
-| Endpoint | Fields |
-| -------- | ------ |
-| `/ready` | `ready`、`status`、`total_documents`、`total_chunks`、`last_error` |
-| `/documents` | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error` |
-| `/ask` SSE | `analysis`、`route`、`source`、`token`、`done`、`error` |
-| `done.response` | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace` |
-| `sources[]` | `source_id`、`filename`、`page_number`、`score`、`snippet` |
-| `trace` | `filters`、`retrieval_params`、`retrieved_nodes`、`evidence_nodes`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、`reranker`、`auto_merge`、`timings_ms`、`events`、`final_decision` |
+| Endpoint          | Fields                                                                                                                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/ready`        | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                      |
+| `/documents`    | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                 |
+| `/ask` SSE      | `analysis`、`route`、`source`、`token`、`done`、`error`                                                                                                                                               |
+| `done.response` | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace`                                                                                                                          |
+| `sources[]`     | `source_id`、`filename`、`page_number`、`score`、`snippet`                                                                                                                                              |
+| `trace`         | `filters`、`retrieval_params`、`retrieved_nodes`、`evidence_nodes`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、`reranker`、`auto_merge`、`timings_ms`、`events`、`final_decision` |
 
 统一错误响应为 `{"error":{"code": "...", "message": "...", "request_id": "..."}}`。请求校验错误、文档不存在、上游模型错误和上传约束错误均使用该结构返回。
 
@@ -314,36 +314,36 @@ npm run build
 
 ## Configuration
 
-| Environment Variable             | Default                      | Description                                                  |
-| -------------------------------- | ---------------------------- | ------------------------------------------------------------ |
-| `RAG_DATA_PATH`                | `data/documents`          | 默认资料库目录                                               |
-| `RAG_UPLOAD_DIR`               | `storage/uploads`         | 上传文件临时保存目录                                         |
-| `RAG_KNOWLEDGE_BASE_ID`        | `kb-finance`               | 默认资料库 ID                                                |
-| `RAG_DATABASE_URL`             | `postgresql://.../finrag`  | PostgreSQL 连接串                                            |
-| `RAG_REDIS_URL`                | `redis://localhost:6379/0` | Redis 缓存连接串                                             |
-| `RAG_MILVUS_HOST`              | `localhost`                | Milvus 服务地址                                              |
-| `RAG_MILVUS_PORT`              | `19530`                    | Milvus 服务端口                                              |
-| `RAG_MILVUS_COLLECTION`        | `finrag_leaf_nodes`        | Milvus leaf node collection                                  |
-| `RAG_EMBEDDING_MODEL`          | `text-embedding-v4`        | DashScope embedding 模型名                                  |
-| `RAG_LLM_MODEL`                | `qwen-max`                 | 生成模型                                                     |
-| `RAG_TOP_K`                    | `3`                        | 最终返回证据数量                                             |
-| `RAG_RETRIEVAL_CANDIDATE_K`    | `10`                       | 初始召回候选数量                                             |
-| `RAG_RRF_K`                    | `60`                       | Milvus hybrid RRFRanker 的 `k` 参数                          |
-| `RAG_RETRIEVAL_STRATEGY`       | `llamaindex_router`        | 固定检索编排策略                                             |
-| `RAG_LLAMAINDEX_INDEX_STORE_DIR` | `storage/llamaindex`      | LlamaIndex index metadata 本地目录                           |
-| `RAG_SCORE_THRESHOLD`          | `0.0`                      | 检索候选分数过滤阈值                                         |
-| `RAG_CHUNK_SIZE`               | `300`                      | 叶子节点大小；层级分块为 1200/600/300                       |
-| `RAG_CHUNK_OVERLAP`            | `60`                       | 分块重叠                                                     |
-| `RAG_RERANKER_PROVIDER`        | `none`                     | Reranker 类型：`none / jina`                                 |
-| `RAG_RERANKER_MODEL`           | `jina-reranker-v2-base-multilingual` | Jina-compatible rerank 模型                       |
-| `RAG_RERANKER_ENDPOINT`        | ``                         | Jina-compatible HTTP rerank endpoint                         |
-| `RAG_RERANKER_API_KEY`         | ``                         | rerank endpoint API key                                      |
-| `RAG_RERANKER_TOP_N`           | `3`                        | rerank 后截断数量                                            |
-| `RAG_AUTO_MERGE_RATIO_THRESHOLD` | `0.5`                    | LlamaIndex AutoMergingRetriever ratio 阈值                    |
-| `RAG_CONTEXT_TOKEN_BUDGET`     | `2400`                     | LlamaIndex node postprocessor 上下文预算                     |
-| `RAG_MAX_UPLOAD_BYTES`         | `20971520`                 | 单个上传文件最大字节数                                       |
-| `RAG_TEMPERATURE`              | `0.1`                      | 生成温度                                                     |
-| `RAG_MAX_TOKENS`               | `2048`                     | 生成长度上限                                                 |
+| Environment Variable               | Default                                | Description                                |
+| ---------------------------------- | -------------------------------------- | ------------------------------------------ |
+| `RAG_DATA_PATH`                  | `data/documents`                     | 默认资料库目录                             |
+| `RAG_UPLOAD_DIR`                 | `storage/uploads`                    | 上传文件临时保存目录                       |
+| `RAG_KNOWLEDGE_BASE_ID`          | `kb-finance`                         | 默认资料库 ID                              |
+| `RAG_DATABASE_URL`               | `postgresql://.../finrag`            | PostgreSQL 连接串                          |
+| `RAG_REDIS_URL`                  | `redis://localhost:6379/0`           | Redis 缓存连接串                           |
+| `RAG_MILVUS_HOST`                | `localhost`                          | Milvus 服务地址                            |
+| `RAG_MILVUS_PORT`                | `19530`                              | Milvus 服务端口                            |
+| `RAG_MILVUS_COLLECTION`          | `finrag_leaf_nodes`                  | Milvus leaf node collection                |
+| `RAG_EMBEDDING_MODEL`            | `text-embedding-v4`                  | DashScope embedding 模型名                 |
+| `RAG_LLM_MODEL`                  | `qwen-max`                           | 生成模型                                   |
+| `RAG_TOP_K`                      | `3`                                  | 最终返回证据数量                           |
+| `RAG_RETRIEVAL_CANDIDATE_K`      | `10`                                 | 初始召回候选数量                           |
+| `RAG_RRF_K`                      | `60`                                 | Milvus hybrid RRFRanker 的 `k` 参数      |
+| `RAG_RETRIEVAL_STRATEGY`         | `llamaindex_router`                  | 固定检索编排策略                           |
+| `RAG_LLAMAINDEX_INDEX_STORE_DIR` | `storage/llamaindex`                 | LlamaIndex index metadata 本地目录         |
+| `RAG_SCORE_THRESHOLD`            | `0.0`                                | 检索候选分数过滤阈值                       |
+| `RAG_CHUNK_SIZE`                 | `300`                                | 叶子节点大小；层级分块为 1200/600/300      |
+| `RAG_CHUNK_OVERLAP`              | `60`                                 | 分块重叠                                   |
+| `RAG_RERANKER_PROVIDER`          | `none`                               | Reranker 类型：`none / jina`             |
+| `RAG_RERANKER_MODEL`             | `jina-reranker-v2-base-multilingual` | Jina-compatible rerank 模型                |
+| `RAG_RERANKER_ENDPOINT`          | ``                                     | Jina-compatible HTTP rerank endpoint       |
+| `RAG_RERANKER_API_KEY`           | ``                                     | rerank endpoint API key                    |
+| `RAG_RERANKER_TOP_N`             | `3`                                  | rerank 后截断数量                          |
+| `RAG_AUTO_MERGE_RATIO_THRESHOLD` | `0.5`                                | LlamaIndex AutoMergingRetriever ratio 阈值 |
+| `RAG_CONTEXT_TOKEN_BUDGET`       | `2400`                               | LlamaIndex node postprocessor 上下文预算   |
+| `RAG_MAX_UPLOAD_BYTES`           | `20971520`                           | 单个上传文件最大字节数                     |
+| `RAG_TEMPERATURE`                | `0.1`                                | 生成温度                                   |
+| `RAG_MAX_TOKENS`                 | `2048`                               | 生成长度上限                               |
 
 ## Operations
 
