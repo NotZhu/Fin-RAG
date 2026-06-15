@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -12,8 +11,6 @@ from llama_index.core.callbacks import CallbackManager
 from finrag.core.node_schema import TextNode
 from finrag.core.response_schema import FinRAGResponse, RAGTrace, RetrievedSource
 from finrag.retrieval.llamaindex_trace import FinRAGTraceHandler
-
-_SOURCE_LIST_LINE = re.compile(r"^\s*\[\d+\]\s*(?:来源|Source|source)\s*[:：].*$")
 
 
 class QAPipelineService:
@@ -157,7 +154,7 @@ class QAPipelineService:
             # 从路由查询结果中提取回答流
             answer_stream = response_gen if response_gen is not None else [str(response_obj)]
             # 从回答流中提取回答
-            answer = self.strip_generated_source_list(self.emit_answer_stream(answer_stream, emit, check_cancelled))
+            answer = self.emit_answer_stream(answer_stream, emit, check_cancelled)
 
             # 确定路由类型
             route_type = "knowledge" if evidence_nodes else "general"
@@ -387,21 +384,6 @@ class QAPipelineService:
             parts.append(text)
             emit("token", text=text)
         return "".join(parts)
-
-    @staticmethod
-    def strip_generated_source_list(answer: str) -> str:
-        """
-        移除模型在答案末尾自行追加的来源列表，保留正文中的引用编号。
-        """
-        lines = answer.rstrip().splitlines()
-        end = len(lines)
-        while end > 0 and _SOURCE_LIST_LINE.match(lines[end - 1]):
-            end -= 1
-        if end == len(lines):
-            return answer.rstrip()
-        while end > 0 and not lines[end - 1].strip():
-            end -= 1
-        return "\n".join(lines[:end]).rstrip()
 
     @staticmethod
     def safe_int(value: Any, default: Optional[int]) -> Optional[int]:

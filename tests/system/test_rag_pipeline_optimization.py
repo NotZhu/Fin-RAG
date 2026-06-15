@@ -89,7 +89,7 @@ def test_knowledge_engine_retrieves_and_generates(tmp_path):
     assert payload["trace"]["evidence_nodes"][0]["chunk_id"] == "leaf-1"
 
 
-def test_generated_source_list_is_removed_from_answer_body(tmp_path):
+def test_generated_answer_body_is_returned_with_structured_sources(tmp_path):
     node = _knowledge_node("开户资料包括营业执照和授权委托书", "leaf-1", filename="policy.md")
     answer = (
         "对公客户首次建立关系时，需要提供营业执照、授权委托书等资料。[1]\n\n"
@@ -101,7 +101,7 @@ def test_generated_source_list_is_removed_from_answer_body(tmp_path):
 
     response = system.ask_question("对公客户首次建立关系时需要哪些资料？", return_sources=True)
 
-    assert response.answer == "对公客户首次建立关系时，需要提供营业执照、授权委托书等资料。[1]"
+    assert response.answer == answer
     assert response.sources[0].filename == "policy.md"
 
 
