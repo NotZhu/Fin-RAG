@@ -11,7 +11,7 @@
 [![pytest](https://img.shields.io/badge/pytest-enabled-0A9EDC)](#testing)
 [![vitest](https://img.shields.io/badge/vitest-enabled-6E9F18)](#testing)
 
-FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要的企业级 RAG 问答系统。系统以“可管理的资料库、可审计的检索链路、可追溯的生成答案”为核心，提供文档生命周期管理、层级节点建模、Milvus 原生 dense+sparse hybrid 检索、LlamaIndex 路由编排、证据窗口扩展、结构化来源引用和 SSE 可观测问答接口。
+FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要的企业级 RAG 问答系统。系统以“可管理的资料库、可审计的检索链路、可追溯的生成答案”为核心，提供文档生命周期管理、层级节点建模、Milvus 原生  hybrid 检索、LlamaIndex 路由编排、证据窗口扩展、结构化来源引用和 SSE 可观测问答接口。
 
 > 项目定位：资料库问答与资料检索，不提供实时行情分析、投资推荐或交易决策。
 
@@ -21,21 +21,21 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - **原生密疏混合检索**：`MilvusNativeHybridRetriever` 使用 Milvus `HYBRID` 查询模式，dense embedding 来自 DashScope `text-embedding-v4`，sparse embedding 由 PostgreSQL BM25 状态和中文分词生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选。
 - **层级证据窗口**：`HierarchicalNodeParser.from_defaults(chunk_sizes=[1200, 600, 300])` 构建 root / parent / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
 - **路由化问答编排**：`llamaindex_router` 将问题路由到知识库问答或普通 LLM；知识库内部按 summary、HyDE、step-back、auto-merge、sub-question 等查询工具组合处理不同问题形态。
-- **可观测生成接口**：`/ask` 以 SSE 输出 `analysis`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时返回检索参数、Milvus hybrid 元信息、auto-merge 配置、来源节点、链路事件和阶段耗时。
+- **可观测生成接口**：`/ask` 以 SSE 输出 `analysis`、`pipeline_step`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时返回检索参数、Milvus hybrid 元信息、auto-merge 配置、来源节点、实时检索链路和阶段耗时。
 - **工程化运行底座**：PostgreSQL 承载 documents、docstore、BM25、manifest，Redis 缓存父级/根级节点，Milvus 存储 leaf node dense+sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
 
 ## Capabilities
 
-| 模块         | 能力                                                                                                                  |
-| ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| 文档生命周期 | 支持 PDF / Markdown / TXT / DOCX 上传、同步或异步索引、列表、删除、重建索引，按 `content_hash` 识别重复内容         |
-| 文档建模     | 使用稳定 `document_id` / `chunk_id`、资料库 ID、页码、文件类型和父级/根级节点关系，保证检索、回源和引用一致       |
-| 索引存储     | leaf nodes 写入 Milvus dense+sparse collection，完整层级节点写入 PostgreSQL docstore，BM25 统计和 manifest 独立持久化 |
-| 检索增强     | 基于 Milvus native hybrid、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集      |
-| 可信生成     | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段   |
-| 可观测性     | SSE 事件流覆盖分析、路由、来源、token、完成与错误；trace 记录 route、retriever、retrieved/evidence nodes 和耗时       |
-| 质量评估     | 提供 hit@k、MRR、keyword coverage 与 Ragas 指标，评估召回命中、排序质量、上下文质量和回答忠实性                       |
-| Web 工作台   | React/Vite 工作台提供 FinRAG 资料库状态、拖拽上传、流式问答、来源引用、链路详情和调试开关                             |
+| 模块         | 能力                                                                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 文档生命周期 | 支持 PDF / Markdown / TXT / DOCX 上传、同步或异步索引、列表、删除、重建索引，按 `content_hash` 识别重复内容                              |
+| 文档建模     | 使用稳定 `document_id` / `chunk_id`、资料库 ID、页码、文件类型和父级/根级节点关系，保证检索、回源和引用一致                            |
+| 索引存储     | leaf nodes 写入 Milvus dense+sparse collection，完整层级节点写入 PostgreSQL docstore，BM25 统计和 manifest 独立持久化                      |
+| 检索增强     | 基于 Milvus native hybrid、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集                           |
+| 可信生成     | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段                        |
+| 可观测性     | SSE 事件流覆盖分析、实时 pipeline step、路由、来源、token、完成与错误；trace 记录 route、retriever、retrieved/evidence nodes 和耗时        |
+| 质量评估     | 提供 hit@k、MRR、keyword coverage 与 Ragas 指标，评估召回命中、排序质量、上下文质量和回答忠实性                                            |
+| Web 工作台   | React/Vite 工作台提供 FinRAG 资料库状态、拖拽上传与确认索引、流式问答、Markdown 回答渲染、来源引用、实时检索链路、文档分页、删除和重建索引 |
 
 ## Architecture
 
@@ -92,7 +92,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 7. **Routing & Grounded Generation**
    顶层 router 将问题分流到 `knowledge -> RAG` 或 `general -> 普通 LLM`。知识库 router 可使用 summary、HyDE、step-back、auto-merge、sub-question 查询工具；Grounded prompt 要求模型依据证据回答，资料不足时说明无法从资料中确认，API 以结构化 `sources` 返回来源编号、文件名、页码、分数和片段。
 8. **Streaming Trace & Evaluation**
-   `/ask` 返回 SSE 流，事件包括 `analysis`、`route`、`source`、`token`、`done` 和 `error`。`return_trace=true` 时，`done.response.trace` 包含 route type、retrieval params、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、retrieved nodes、evidence nodes、auto-merge、reranker、事件列表和阶段耗时。检索评估脚本评估 `milvus_hybrid_retriever`，Ragas 脚本评估生成答案与上下文质量。
+   `/ask` 返回 SSE 流，事件包括 `analysis`、`pipeline_step`、`route`、`source`、`token`、`done` 和 `error`。`pipeline_step` 会实时报告 Query Analysis、Router、Milvus Hybrid Search、Reranker、Auto Merge、Evidence Window 和 Streaming Answer 等链路节点的状态、耗时和元信息；`return_trace=true` 时，`done.response.trace` 包含 route type、retrieval params、`pipeline_steps`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、retrieved nodes、evidence nodes、auto-merge、reranker、事件列表和阶段耗时。检索评估脚本评估 `milvus_hybrid_retriever`，Ragas 脚本评估生成答案与上下文质量。
 
 ## Runtime Stack
 
@@ -179,7 +179,7 @@ npm install
 npm run dev
 ```
 
-默认前端开发服务会连接本地 FastAPI 服务。工作台以 `FinRAG` 为页面主标题，提供资料库预热、文档上传并索引、文档状态、流式问答、来源引用和可选调试 trace 展示。生产构建：
+默认前端开发服务会连接本地 FastAPI 服务。工作台采用左侧知识库工具栏和右侧问答/文档页布局，支持拖拽上传并确认索引、资料库 ID 输入、实时检索链路时间线、流式问答、Markdown 回答渲染、来源引用、文档分页、失败原因展示、删除文档和重新索引。生产构建：
 
 ```bash
 npm run build
@@ -211,9 +211,12 @@ npm run build
 
 ### Ask Response
 
-`/ask` 返回 `text/event-stream`。事件包括 `analysis`、`route`、`source`、`token`、`done` 和 `error`。当 `return_sources=false` 时不会发送 `source` 事件，最终响应中的 `sources` 也为空；当 `return_trace=true` 时，最终 `done` 事件的 `response.trace` 会包含调试信息。
+`/ask` 返回 `text/event-stream`。事件包括 `analysis`、`pipeline_step`、`route`、`source`、`token`、`done` 和 `error`。当 `return_sources=false` 时不会发送 `source` 事件，最终响应中的 `sources` 也为空；当 `return_trace=true` 时，最终 `done` 事件的 `response.trace` 会包含调试信息。
 
 ```text
+event: pipeline_step
+data: {"id":"hybrid_search","order":3,"label":"Milvus Hybrid Search","detail":"dense+sparse · candidate_k 10","status":"complete","duration_ms":24.0,"meta":{"candidate_k":10}}
+
 event: token
 data: {"text":"客户风险等级应与产品风险等级匹配"}
 
@@ -245,6 +248,30 @@ data: {"response":{...},"final_decision":"generate"}
       "analysis": 2.1,
       "total": 861.1
     },
+    "pipeline_steps": [
+      {
+        "id": "query_analysis",
+        "order": 1,
+        "label": "Query Analysis",
+        "detail": "识别金融风控问题",
+        "status": "complete",
+        "duration_ms": 2.1,
+        "meta": {
+          "retrieval_strategy": "llamaindex_router"
+        }
+      },
+      {
+        "id": "hybrid_search",
+        "order": 3,
+        "label": "Milvus Hybrid Search",
+        "detail": "dense+sparse · candidate_k 10",
+        "status": "complete",
+        "duration_ms": 24.0,
+        "meta": {
+          "candidate_k": 10
+        }
+      }
+    ],
     "events": [
       {
         "stage": "route",
@@ -264,14 +291,15 @@ data: {"response":{...},"final_decision":"generate"}
 
 前端工作台依赖以下响应字段，字段名与 FastAPI/Pydantic schema 保持一致：
 
-| Endpoint          | Fields                                                                                                                                                                                                            |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/ready`        | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                      |
-| `/documents`    | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                 |
-| `/ask` SSE      | `analysis`、`route`、`source`、`token`、`done`、`error`                                                                                                                                               |
-| `done.response` | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace`                                                                                                                          |
-| `sources[]`     | `source_id`、`filename`、`page_number`、`score`、`snippet`                                                                                                                                              |
-| `trace`         | `filters`、`retrieval_params`、`retrieved_nodes`、`evidence_nodes`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、`reranker`、`auto_merge`、`timings_ms`、`events`、`final_decision` |
+| Endpoint             | Fields                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/ready`           | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                                          |
+| `/documents`       | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                                     |
+| `/ask` SSE         | `analysis`、`pipeline_step`、`route`、`source`、`token`、`done`、`error`                                                                                                                                                |
+| `done.response`    | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace`                                                                                                                                              |
+| `sources[]`        | `source_id`、`filename`、`page_number`、`score`、`snippet`                                                                                                                                                                  |
+| `trace`            | `filters`、`retrieval_params`、`pipeline_steps`、`retrieved_nodes`、`evidence_nodes`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、`reranker`、`auto_merge`、`timings_ms`、`events`、`final_decision` |
+| `pipeline_steps[]` | `id`、`order`、`label`、`detail`、`status`、`duration_ms`、`meta`                                                                                                                                                       |
 
 统一错误响应为 `{"error":{"code": "...", "message": "...", "request_id": "..."}}`。请求校验错误、文档不存在、上游模型错误和上传约束错误均使用该结构返回。
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { askQuestionStream, uploadDocument } from "./client";
+import { askQuestionStream, deleteDocument, reindexDocument, uploadDocument } from "./client";
 
 function streamResponse(chunks: string[], headers: Record<string, string> = {}) {
   const encoder = new TextEncoder();
@@ -35,6 +35,7 @@ describe("askQuestionStream", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       streamResponse([
         'event: analysis\ndata: {"route_type":"knowledge"}\n\n',
+        'event: pipeline_step\ndata: {"id":"hybrid_search","order":3,"label":"Milvus Hybrid Search","detail":"dense+sparse · candidate_k 10","status":"complete","duration_ms":24,"meta":{}}\n\n',
         'event: token\ndata: {"text":"客户风险"}\n\n',
         'event: token\ndata: {"text":"等级匹配。[1]"}\n\n',
         'event: done\ndata: {"response":{"question":"q","route_type":"knowledge","retrieval_strategy":"llamaindex_router","answer":"客户风险等级匹配。[1]","sources":[]}}\n\n'
@@ -47,7 +48,7 @@ describe("askQuestionStream", () => {
       }
     });
 
-    expect(events).toEqual(["analysis", "token", "token", "done"]);
+    expect(events).toEqual(["analysis", "pipeline_step", "token", "token", "done"]);
     expect(result.payload.answer).toBe("客户风险等级匹配。[1]");
     expect(result.requestId).toBe("req-stream");
     expect(result.processTime).toBe("45.67");
@@ -110,5 +111,45 @@ describe("uploadDocument", () => {
     expect(submittedBody.get("file")).toBeInstanceOf(File);
     expect(submittedBody.get("knowledge_base_id")).toBe("kb-finance");
     expect(submittedBody.get("document_category")).toBeNull();
+  });
+});
+
+describe("document lifecycle client", () => {
+  test("reindexes a document by id", async () => {
+    let observedInput = "";
+    let observedMethod = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
+      observedMethod = String(init?.method ?? "");
+      return Promise.resolve(
+        new Response(JSON.stringify({ document_id: "doc-1", status: "indexed" }), {
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    });
+
+    await reindexDocument("doc-1");
+
+    expect(observedInput).toBe("/documents/doc-1/reindex");
+    expect(observedMethod).toBe("POST");
+  });
+
+  test("deletes a document by id", async () => {
+    let observedInput = "";
+    let observedMethod = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
+      observedMethod = String(init?.method ?? "");
+      return Promise.resolve(
+        new Response(JSON.stringify({ document_id: "doc-1", status: "deleted" }), {
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    });
+
+    await deleteDocument("doc-1");
+
+    expect(observedInput).toBe("/documents/doc-1");
+    expect(observedMethod).toBe("DELETE");
   });
 });

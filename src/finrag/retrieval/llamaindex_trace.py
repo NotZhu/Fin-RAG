@@ -1,10 +1,10 @@
-"""FinRAG LlamaIndex callback trace handler.
-
-Converts LlamaIndex instrumentation events into the compact format used
-by RAGTrace.llamaindex_events."""
+"""
+知识库问答 LlamaIndex 回调轨迹处理程序
+"""
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 from llama_index.core.callbacks import CBEventType, EventPayload
@@ -13,6 +13,7 @@ from llama_index.core.callbacks.base import BaseCallbackHandler
 
 _EVENT_TYPE_KEY = "event_type"
 _PHASE_KEY = "phase"
+_START_TIME_KEY = "_start_time"
 SUMMARY_WHITELIST = frozenset(
     {
         "query_str",
@@ -71,6 +72,7 @@ class FinRAGTraceHandler(BaseCallbackHandler):
             _PHASE_KEY: "start",
             "event_id": event_id,
             "parent_id": parent_id,
+            _START_TIME_KEY: time.perf_counter(),
         }
         payload = payload or {}
         summary = _extract_summary(event_type, payload)
@@ -106,6 +108,9 @@ class FinRAGTraceHandler(BaseCallbackHandler):
             }
         else:
             entry[_PHASE_KEY] = "end"
+        start_time = entry.pop(_START_TIME_KEY, None)
+        if start_time is not None:
+            entry["duration_ms"] = round((time.perf_counter() - float(start_time)) * 1000, 2)
         payload = payload or {}
         summary = _extract_summary(event_type, payload)
         if summary:

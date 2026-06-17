@@ -228,6 +228,35 @@ def test_analysis_event_sent_before_query(tmp_path):
     assert route_events[0]["route_type"] == "knowledge"
 
 
+def test_pipeline_step_events_and_trace_are_emitted_for_router_path(tmp_path):
+    node = _knowledge_node("客户风险等级应与产品风险等级匹配", "leaf-1")
+    engine = FakeRouterEngine(
+        [NodeWithScore(node=node, score=0.9)],
+        response_gen=iter(["根据", "证据", "回答[1]"]),
+    )
+    system = _setup_knowledge_system(tmp_path, engine)
+    events = []
+
+    response = system.ask_question(
+        "客户风险等级如何匹配？",
+        return_sources=True,
+        return_trace=True,
+        event_sink=events.append,
+    )
+    payload = response.to_dict()
+
+    step_events = [event for event in events if event["type"] == "pipeline_step"]
+    step_ids = [event["id"] for event in step_events]
+    assert "query_analysis" in step_ids
+    assert "router" in step_ids
+    assert "hybrid_search" in step_ids
+    assert "evidence_window" in step_ids
+    assert "streaming_answer" in step_ids
+    assert any(event["id"] == "streaming_answer" and event["status"] == "running" for event in step_events)
+    assert any(event["id"] == "streaming_answer" and event["status"] == "complete" for event in step_events)
+    assert payload["trace"]["pipeline_steps"][-1]["id"] == "streaming_answer"
+
+
 def test_knowledge_unavailable_returns_structured_error(tmp_path):
     engine = FakeRouterEngine([], error=RuntimeError("Milvus 不可用"))
     system = _setup_knowledge_system(tmp_path, engine)
@@ -244,6 +273,10 @@ def test_knowledge_unavailable_returns_structured_error(tmp_path):
     assert error_events[0]["retryable"] is True
     done_events = [e for e in events if e["type"] == "done"]
     assert len(done_events) == 1
+    assert any(
+        event["type"] == "pipeline_step" and event["id"] == "router" and event["status"] == "error"
+        for event in events
+    )
 
 
 def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
@@ -263,4 +296,8 @@ def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
     assert payload["trace"]["final_decision"] == "knowledge_unavailable"
     assert payload["trace"]["events"][0]["stage"] == "error"
     assert "router_engine" in payload["trace"]["events"][0]["message"]
-    assert [event["type"] for event in events] == ["analysis", "error", "done"]
+    assert [event["type"] for event in events if event["type"] != "pipeline_step"] == ["analysis", "error", "done"]
+    assert any(
+        event["type"] == "pipeline_step" and event["id"] == "router" and event["status"] == "error"
+        for event in events
+    )

@@ -21,6 +21,16 @@ export type DocumentsResponse = {
   documents: DocumentRecord[];
 };
 
+export type PipelineStep = {
+  id: string;
+  order: number;
+  label: string;
+  detail: string;
+  status: "running" | "complete" | "error" | "skipped";
+  duration_ms: number | null;
+  meta: Record<string, unknown>;
+};
+
 export type RetrievedSource = {
   source_id: number;
   filename: string;
@@ -34,6 +44,7 @@ export type RagTrace = {
   route_type?: string;
   filters: Record<string, unknown>;
   timings_ms: Record<string, number>;
+  pipeline_steps?: PipelineStep[];
   retrieval_params: {
     top_k: number;
     candidate_k: number;
@@ -63,7 +74,10 @@ export type ApiError = {
   request_id?: string;
 };
 
-export type AskStreamEvent = {
-  type: string;
-  data: Record<string, unknown>;
-};
+export type AskStreamEvent =
+  | { type: "pipeline_step"; data: PipelineStep }
+  | { type: "token"; data: { text?: string } & Record<string, unknown> }
+  | { type: "source"; data: { source?: RetrievedSource } & Record<string, unknown> }
+  | { type: "done"; data: { response?: AskResponse; final_decision?: string } & Record<string, unknown> }
+  | { type: "error"; data: { message?: string } & Record<string, unknown> }
+  | { type: string; data: Record<string, unknown> };

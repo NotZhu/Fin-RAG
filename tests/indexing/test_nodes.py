@@ -1,10 +1,29 @@
-from llama_index.core.schema import TextNode
+from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+from llama_index.core.schema import TextNode, TransformComponent
 
-from finrag.indexing.nodes import DataPreparationModule
+from finrag.indexing.nodes import (
+    DataPreparationModule,
+    FinRAGMetadataTransform,
+    build_ingestion_pipeline,
+)
 
 
 def test_nodes_module_reuses_parser_supported_suffixes():
     assert not hasattr(DataPreparationModule, "make_text_node")
+
+
+def test_build_ingestion_pipeline_accepts_finrag_metadata_transform(tmp_path):
+    module = DataPreparationModule(str(tmp_path), chunk_size=80, chunk_overlap=10)
+
+    pipeline = build_ingestion_pipeline(
+        module,
+        MockEmbedding(embed_dim=3),
+        vector_store=None,
+        docstore=None,
+    )
+
+    assert any(isinstance(transform, FinRAGMetadataTransform) for transform in pipeline.transformations)
+    assert all(isinstance(transform, TransformComponent) for transform in pipeline.transformations)
 
 
 def test_nodes_build_three_level_chunks_and_index_only_l3(tmp_path):

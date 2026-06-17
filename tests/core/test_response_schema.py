@@ -20,6 +20,17 @@ def test_finrag_response_serializes_sources_and_trace():
         route_type="knowledge",
         filters={"knowledge_base_id": "kb-finance"},
         timings_ms={"retrieval": 3.0},
+        pipeline_steps=[
+            {
+                "id": "hybrid_search",
+                "order": 3,
+                "label": "Milvus Hybrid Search",
+                "detail": "dense+sparse · candidate_k 10",
+                "status": "complete",
+                "duration_ms": 3.0,
+                "meta": {},
+            }
+        ],
         retrieved_nodes=[{"node_id": "node-1"}],
         evidence_nodes=[{"node_id": "node-1"}],
         events=[{"stage": "query_analysis"}],
@@ -52,6 +63,7 @@ def test_finrag_response_serializes_sources_and_trace():
     assert "regulatory_topic" not in payload["sources"][0]
     assert payload["trace"]["retrieval_strategy"] == "llamaindex_router"
     assert payload["trace"]["route_type"] == "knowledge"
+    assert payload["trace"]["pipeline_steps"][0]["id"] == "hybrid_search"
     assert payload["trace"]["retrieved_nodes"] == [{"node_id": "node-1"}]
     assert payload["trace"]["evidence_nodes"] == [{"node_id": "node-1"}]
     legacy_trace_key = "_".join(("final", "evidence"))

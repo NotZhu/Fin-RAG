@@ -6,11 +6,12 @@ import hashlib
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from llama_index.core import Document, StorageContext
+from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.node_parser import HierarchicalNodeParser, get_leaf_nodes
-from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
+from llama_index.core.schema import BaseNode, NodeRelationship, RelatedNodeInfo, TransformComponent
 from finrag.core.node_schema import TextNode
 from finrag.ingestion.parsers import SUPPORTED_SUFFIXES, ParserRegistry, is_path_within, load_documents as load_financial_documents
 
@@ -387,18 +388,26 @@ class DataPreparationModule:
         }
 
 
-class FinRAGMetadataTransform:
+class FinRAGMetadataTransform(TransformComponent):
     """
     将 FinRAG 元数据赋值到层级节点的转换函数
     """
 
+    _data_module: Any = PrivateAttr()
+
     def __init__(self, data_module: Any):
+        super().__init__()
         self._data_module = data_module
 
-    def __call__(self, nodes: List[TextNode], **kwargs: Any) -> List[TextNode]:
+    @classmethod
+    def class_name(cls) -> str:
+        return "finrag_metadata_transform"
+
+    def __call__(self, nodes: Sequence[BaseNode], **kwargs: Any) -> Sequence[BaseNode]:
         # 赋值 FinRAG 元数据到层级节点
-        self._data_module._assign_finrag_metadata(nodes)
-        return nodes
+        node_list = list(nodes)
+        self._data_module._assign_finrag_metadata(node_list)
+        return node_list
 
 
 def build_ingestion_pipeline(

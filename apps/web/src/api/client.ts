@@ -1,6 +1,21 @@
-import type { ApiError, AskResponse, AskStreamEvent, DocumentsResponse, ReadyResponse } from "../types/api";
+import type {
+  ApiError,
+  AskResponse,
+  AskStreamEvent,
+  DocumentRecord,
+  DocumentsResponse,
+  ReadyResponse,
+} from "../types/api";
 
-export type { ApiError, AskResponse, AskStreamEvent, DocumentRecord, DocumentsResponse, ReadyResponse } from "../types/api";
+export type {
+  ApiError,
+  AskResponse,
+  AskStreamEvent,
+  DocumentRecord,
+  DocumentsResponse,
+  PipelineStep,
+  ReadyResponse,
+} from "../types/api";
 
 async function readError(response: Response): Promise<ApiError> {
   try {
@@ -11,7 +26,10 @@ async function readError(response: Response): Promise<ApiError> {
   }
 }
 
-async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<T> {
   const response = await fetch(input, init);
   if (!response.ok) {
     throw await readError(response);
@@ -31,11 +49,34 @@ export async function listDocuments(): Promise<DocumentsResponse> {
   return fetchJson<DocumentsResponse>("/documents");
 }
 
-export async function uploadDocument(file: File, knowledgeBaseId: string) {
+export async function uploadDocument(
+  file: File,
+  knowledgeBaseId: string,
+  asyncIndex = true,
+) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("knowledge_base_id", knowledgeBaseId);
+  formData.append("async_index", String(asyncIndex));
   return fetchJson("/documents/upload", { method: "POST", body: formData });
+}
+
+export async function reindexDocument(
+  documentId: string,
+): Promise<DocumentRecord> {
+  return fetchJson<DocumentRecord>(
+    `/documents/${encodeURIComponent(documentId)}/reindex`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteDocument(
+  documentId: string,
+): Promise<DocumentRecord> {
+  return fetchJson<DocumentRecord>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    { method: "DELETE" },
+  );
 }
 
 type AskStreamOptions = {
@@ -47,7 +88,7 @@ export async function askQuestionStream(
   question: string,
   returnTrace: boolean,
   knowledgeBaseId = "kb-finance",
-  options: AskStreamOptions = {}
+  options: AskStreamOptions = {},
 ) {
   const startTime = performance.now();
   const response = await fetch("/ask", {
@@ -58,8 +99,8 @@ export async function askQuestionStream(
       question,
       knowledge_base_id: knowledgeBaseId,
       return_sources: true,
-      return_trace: returnTrace
-    })
+      return_trace: returnTrace,
+    }),
   });
 
   if (!response.ok) {
@@ -75,11 +116,14 @@ export async function askQuestionStream(
   return {
     payload,
     requestId: response.headers.get("X-Request-ID") ?? "-",
-    processTime: elapsedMs
+    processTime: elapsedMs,
   };
 }
 
-async function readAskStream(body: ReadableStream<Uint8Array>, onEvent?: (event: AskStreamEvent) => void): Promise<AskResponse> {
+async function readAskStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent?: (event: AskStreamEvent) => void,
+): Promise<AskResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -99,7 +143,9 @@ async function readAskStream(body: ReadableStream<Uint8Array>, onEvent?: (event:
         donePayload = event.data.response;
       }
       if (event.type === "error") {
-        throw { message: String(event.data.message ?? "流式问答失败。") } satisfies ApiError;
+        throw {
+          message: String(event.data.message ?? "流式问答失败。"),
+        } satisfies ApiError;
       }
     }
   }
@@ -132,9 +178,17 @@ function parseSseEvent(block: string): AskStreamEvent | null {
   if (!dataLines.length) {
     return null;
   }
-  return { type, data: JSON.parse(dataLines.join("\n")) as Record<string, unknown> };
+  return {
+    type,
+    data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>,
+  };
 }
 
 function isAskResponse(value: unknown): value is AskResponse {
-  return Boolean(value && typeof value === "object" && "answer" in value && "sources" in value);
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "answer" in value &&
+    "sources" in value,
+  );
 }

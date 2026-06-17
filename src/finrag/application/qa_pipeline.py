@@ -45,6 +45,35 @@ class QAPipelineService:
             if event_sink is not None:
                 event_sink({"type": event_type, **payload})
 
+        pipeline_steps: List[Dict[str, Any]] = []
+
+        def emit_step(
+            step_id: str,
+            order: int,
+            label: str,
+            detail: str,
+            status: str,
+            duration_ms: Optional[float] = None,
+            meta: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            step = {
+                "id": step_id,
+                "order": order,
+                "label": label,
+                "detail": detail,
+                "status": status,
+                "duration_ms": round(float(duration_ms), 2) if duration_ms is not None else None,
+                "meta": dict(meta or {}),
+            }
+            for index, existing in enumerate(pipeline_steps):
+                if existing.get("id") == step_id:
+                    pipeline_steps[index] = step
+                    break
+            else:
+                pipeline_steps.append(step)
+            emit("pipeline_step", **step)
+            return step
+
         def check_cancelled() -> None:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("ask stream 已取消")
@@ -58,12 +87,31 @@ class QAPipelineService:
         strategy = getattr(system.config, "retrieval_strategy", "llamaindex_router")
         analysis_start = time.perf_counter()
 
+        emit_step("query_analysis", 1, "Query Analysis", "识别金融风控问题", "running")
         emit("analysis", route_type="pending", query=question, retrieval_strategy=strategy)
         check_cancelled()
+        analysis_ms = self.elapsed_ms(analysis_start)
+        emit_step(
+            "query_analysis",
+            1,
+            "Query Analysis",
+            "识别金融风控问题",
+            "complete",
+            analysis_ms,
+            {"retrieval_strategy": strategy},
+        )
 
         # 检查路由引擎是否初始化
         if system.router_engine is None:
-            analysis_ms = self.elapsed_ms(analysis_start)
+            emit_step(
+                "router",
+                2,
+                "Router: knowledge",
+                "router_engine 未初始化",
+                "error",
+                0.0,
+                {"route_type": "knowledge"},
+            )
             return self._knowledge_unavailable(
                 question=question,
                 strategy=strategy,
@@ -72,6 +120,7 @@ class QAPipelineService:
                 error=RuntimeError("router_engine 未初始化"),
                 events=events,
                 timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+                pipeline_steps=pipeline_steps,
                 return_trace=return_trace,
                 emit=emit,
             )
@@ -85,12 +134,9 @@ class QAPipelineService:
             return_sources=return_sources, return_trace=return_trace,
             knowledge_base_id=knowledge_base_id,
             events=events,
-            emit=emit, check_cancelled=check_cancelled,
+            pipeline_steps=pipeline_steps,
+            emit=emit, emit_step=emit_step, check_cancelled=check_cancelled,
         )
-
-    # ------------------------------------------------------------------
-    # Router path
-    # ------------------------------------------------------------------
 
     def _ask_via_router(
         self,
@@ -103,7 +149,9 @@ class QAPipelineService:
         return_trace: bool,
         knowledge_base_id: Optional[str],
         events: List[Dict[str, Any]],
+        pipeline_steps: List[Dict[str, Any]],
         emit: Callable[..., None],
+        emit_step: Callable[..., Dict[str, Any]],
         check_cancelled: Callable[[], None],
     ) -> FinRAGResponse:
         """
@@ -132,16 +180,28 @@ class QAPipelineService:
         Settings.callback_manager = CallbackManager([trace_handler])
 
         try:
+            router_start = time.perf_counter()
+            emit_step("router", 2, "Router", "选择查询引擎", "running")
             try:
                 # 执行路由查询
                 response_obj = system.router_engine.query(question)
             except Exception as exc:
                 # 处理路由查询异常
+                emit_step(
+                    "router",
+                    2,
+                    "Router: knowledge",
+                    "查询路由失败",
+                    "error",
+                    self.elapsed_ms(router_start),
+                    {"error": f"{exc.__class__.__name__}: {exc}"},
+                )
                 return self._knowledge_unavailable(
                     question=question, strategy=strategy, route_type="knowledge",
                     filters={"knowledge_base_id": knowledge_base_id or system.config.knowledge_base_id},
                     error=exc, events=events,
                     timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+                    pipeline_steps=pipeline_steps,
                     return_trace=return_trace, emit=emit,
                 )
 
@@ -149,28 +209,103 @@ class QAPipelineService:
             retrieved = list(getattr(response_obj, "source_nodes", []) or [])
             # 从路由查询结果中提取证据节点
             evidence_nodes: List[TextNode] = [item.node for item in retrieved]
-            # 从路由查询结果中提取回答生成器
-            response_gen = getattr(response_obj, "response_gen", None)
-            # 从路由查询结果中提取回答流
-            answer_stream = response_gen if response_gen is not None else [str(response_obj)]
-            # 从回答流中提取回答
-            answer = self.emit_answer_stream(answer_stream, emit, check_cancelled)
 
             # 确定路由类型
             route_type = "knowledge" if evidence_nodes else "general"
             # 确定查询引擎
             selected_engine = "knowledge_router" if evidence_nodes else "general_engine"
+            emit_step(
+                "router",
+                2,
+                f"Router: {route_type}",
+                "命中知识库路由" if route_type == "knowledge" else "命中通用路由",
+                "complete",
+                self.elapsed_ms(router_start),
+                {"route_type": route_type, "selected_query_engine": selected_engine},
+            )
             emit("route", route_type=route_type, selected_query_engine=selected_engine)
             events.append({"stage": "route", "route_type": route_type, "selected_query_engine": selected_engine})
             check_cancelled()
 
+            next_order = 3
+            if evidence_nodes:
+                hybrid_trace = dict(getattr(getattr(system, "hybrid_retriever", None), "last_hybrid_trace", {}) or {})
+                candidate_k = int(hybrid_trace.get("candidate_k") or getattr(system.config, "retrieval_candidate_k", 0) or 0)
+                retrieve_ms = self.first_trace_duration_ms(trace_handler.events, "retrieve")
+                emit_step(
+                    "hybrid_search",
+                    next_order,
+                    "Milvus Hybrid Search",
+                    f"dense+sparse · candidate_k {candidate_k}",
+                    "complete",
+                    retrieve_ms,
+                    hybrid_trace,
+                )
+                next_order += 1
+
+                reranker = getattr(system, "reranker", None)
+                reranker_provider = getattr(reranker, "provider", "") if reranker is not None else ""
+                if reranker is not None and reranker_provider and reranker_provider != "none":
+                    emit_step(
+                        "reranker",
+                        next_order,
+                        "Reranker",
+                        f"{reranker_provider} · top-n {getattr(system.config, 'reranker_top_n', '-')}",
+                        "complete",
+                        self.first_trace_duration_ms(trace_handler.events, "rerank"),
+                        {"provider": reranker_provider},
+                    )
+                    next_order += 1
+
+                if getattr(system, "auto_merge_retriever", None) is not None:
+                    emit_step(
+                        "auto_merge",
+                        next_order,
+                        "Auto Merge",
+                        "合并父级节点",
+                        "complete",
+                        None,
+                        {"simple_ratio_thresh": system.config.auto_merge_ratio_threshold},
+                    )
+                    next_order += 1
+
             # 去重后的证据节点
+            evidence_start = time.perf_counter()
             deduped_evidence_nodes = self.dedupe_evidence_nodes(evidence_nodes)
             # 构建检索源列表
             sources = self.build_sources(deduped_evidence_nodes, retrieved)
+            if evidence_nodes:
+                emit_step(
+                    "evidence_window",
+                    next_order,
+                    "Evidence Window",
+                    "构建引用证据",
+                    "complete",
+                    self.elapsed_ms(evidence_start),
+                    {"source_count": len(sources)},
+                )
+                next_order += 1
             if return_sources:
                 for source in sources:
                     emit("source", source=source.to_dict())
+
+            # 从路由查询结果中提取回答生成器
+            response_gen = getattr(response_obj, "response_gen", None)
+            # 从路由查询结果中提取回答流
+            answer_stream = response_gen if response_gen is not None else [str(response_obj)]
+            # 从回答流中提取回答
+            generation_start = time.perf_counter()
+            emit_step("streaming_answer", next_order, "Streaming Answer", "大模型生成中...", "running")
+            answer = self.emit_answer_stream(answer_stream, emit, check_cancelled)
+            emit_step(
+                "streaming_answer",
+                next_order,
+                "Streaming Answer",
+                "大模型生成完成",
+                "complete",
+                self.elapsed_ms(generation_start),
+                {"answer_chars": len(answer)},
+            )
 
             # 确定最终决策
             final_decision = "generate" if (evidence_nodes or route_type == "general") else "insufficient_evidence"
@@ -180,6 +315,7 @@ class QAPipelineService:
                 retrieval_strategy=strategy, 
                 route_type=route_type,
                 timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+                pipeline_steps=pipeline_steps,
                 retrieved_nodes=[self.node_trace(rank, item.node, item.score) for rank, item in enumerate(retrieved, 1)],
                 evidence_nodes=[self.node_trace(rank, node, None) for rank, node in enumerate(deduped_evidence_nodes, 1)],
                 events=events, 
@@ -214,6 +350,7 @@ class QAPipelineService:
         error: Exception,
         events: List[Dict[str, Any]],
         timings_ms: Dict[str, float],
+        pipeline_steps: List[Dict[str, Any]],
         return_trace: bool,
         emit: Callable[..., None],
     ) -> FinRAGResponse:
@@ -229,6 +366,7 @@ class QAPipelineService:
             route_type=route_type,
             filters=filters,
             timings_ms=timings_ms,
+            pipeline_steps=pipeline_steps,
             events=events,
             final_decision="knowledge_unavailable",
         )
@@ -402,3 +540,10 @@ class QAPipelineService:
     @staticmethod
     def elapsed_ms(start_time: float) -> float:
         return (time.perf_counter() - start_time) * 1000
+
+    @staticmethod
+    def first_trace_duration_ms(events: Iterable[Dict[str, Any]], event_type: str) -> Optional[float]:
+        for event in events:
+            if str(event.get("event_type") or "").lower() == event_type and event.get("duration_ms") is not None:
+                return QAPipelineService.safe_score(event.get("duration_ms"))
+        return None
