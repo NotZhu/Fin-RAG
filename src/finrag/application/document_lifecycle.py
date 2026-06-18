@@ -136,18 +136,19 @@ class DocumentLifecycleService:
             # 获取文档记录
             record = system.document_registry.get(document_id)
             # 校验文档归属指定知识库
-            if record.knowledge_base_id != validate_knowledge_base_id(knowledge_base_id):
+            knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
+            if record.knowledge_base_id != knowledge_base_id:
                 raise KeyError(document_id)
             # 确保增量索引准备就绪
-            system._ensure_incremental_index_ready_locked()
+            system._ensure_incremental_index_ready_locked(knowledge_base_id)
             # 删除管理源文件
             system._managed_source_files().delete_managed_source_file(record.source_path)
             # 删除文档索引条目
-            system._delete_document_index_entries_locked(document_id)
+            system._delete_document_index_entries_locked(knowledge_base_id, document_id)
             # 标记文档为已删除
             system.document_registry.mark_deleted(document_id)
             # 刷新文档索引
-            system._reload_from_store_and_refresh_locked()
+            system._reload_from_store_and_refresh_locked(knowledge_base_id)
             # 返回文档记录
             return system._public_document(document_id)
 
@@ -164,7 +165,8 @@ class DocumentLifecycleService:
         with system._write_lock:
             record = system.document_registry.get(document_id)
             # 校验文档归属指定知识库
-            if record.knowledge_base_id != validate_knowledge_base_id(knowledge_base_id):
+            knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
+            if record.knowledge_base_id != knowledge_base_id:
                 raise KeyError(document_id)
             # 标记文档为解析中
             system.document_registry.mark_parsing(document_id)

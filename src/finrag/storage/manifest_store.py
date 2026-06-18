@@ -31,37 +31,49 @@ class PostgreSQLIndexManifestStore:
                 conn,
                 """
                 CREATE TABLE IF NOT EXISTS finrag_index_manifest (
-                    id INTEGER PRIMARY KEY,
+                    knowledge_base_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """,
             )
 
-    def save_manifest(self, manifest: Dict[str, Any]) -> None:
+    def save_manifest(self, manifest: Dict[str, Any], knowledge_base_id: str) -> None:
         """
         保存当前索引清单
         Args:
             manifest: 待保存的索引清单字典
+            knowledge_base_id: 知识库 ID
         """
         payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
         with self.db.connect() as conn:
-            execute(conn, "DELETE FROM finrag_index_manifest WHERE id = 1")
             execute(
                 conn,
-                "INSERT INTO finrag_index_manifest (id, payload, updated_at) VALUES (1, %s, %s)",
-                (payload, utc_now_iso()),
+                """
+                INSERT INTO finrag_index_manifest (knowledge_base_id, payload, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (knowledge_base_id) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (knowledge_base_id, payload, utc_now_iso()),
             )
 
-    def load_manifest(self) -> Optional[Dict[str, Any]]:
+    def load_manifest(self, knowledge_base_id: str) -> Optional[Dict[str, Any]]:
         """
         加载当前索引清单
+        Args:
+            knowledge_base_id: 知识库 ID
         Returns:
             索引清单字典，不存在时返回 None
         """
         with self.db.connect() as conn: # 连接数据库并获取连接对象
-            # 查询 ID=1 的索引清单记录
-            row = execute(conn, "SELECT payload FROM finrag_index_manifest WHERE id = 1").fetchone()
+            # 查询指定知识库的索引清单记录
+            row = execute(
+                conn,
+                "SELECT payload FROM finrag_index_manifest WHERE knowledge_base_id = %s",
+                (knowledge_base_id,),
+            ).fetchone()
         if row is None:
             return None
         return json.loads(row[0]) # 解析 JSON 字符串为字典

@@ -73,24 +73,24 @@ class DocumentRegistryStore(Protocol):
 class NodeStore(Protocol):
     """层级 TextNode 持久化存储协议"""
 
-    def replace_document_nodes(self, document_id: str, nodes: List[TextNode]) -> None:
+    def replace_document_nodes(self, document_id: str, nodes: List[TextNode], knowledge_base_id: str) -> None:
         """替换单个文档的全部层级节点"""
         ...
 
-    def load_all_nodes(self) -> List[TextNode]:
-        """加载全部层级节点"""
+    def load_all_nodes(self, knowledge_base_id: str) -> List[TextNode]:
+        """加载指定知识库的全部层级节点"""
         ...
 
-    def load_leaf_nodes(self) -> List[TextNode]:
-        """加载所有叶子节点"""
+    def load_leaf_nodes(self, knowledge_base_id: str) -> List[TextNode]:
+        """加载指定知识库的所有叶子节点"""
         ...
 
     def get_node(self, node_id: str) -> Optional[TextNode]:
         """按节点 ID 获取节点"""
         ...
 
-    def delete_document(self, document_id: str) -> None:
-        """删除单个文档的全部节点"""
+    def delete_document(self, document_id: str, knowledge_base_id: str) -> None:
+        """删除指定知识库中单个文档的全部节点"""
         ...
 
     def clear(self) -> None:
@@ -106,23 +106,23 @@ class NodeStore(Protocol):
 class BM25StateStore(Protocol):
     """BM25 词项和分块词频状态存储协议"""
 
-    def replace_document_chunks(self, document_id: str, chunk_token_counts: Dict[str, Dict[str, int]]) -> None:
+    def replace_document_chunks(self, knowledge_base_id: str, document_id: str, chunk_token_counts: Dict[str, Dict[str, int]]) -> None:
         """替换单个文档各分块的词频"""
         ...
 
-    def delete_document(self, document_id: str) -> None:
+    def delete_document(self, knowledge_base_id: str, document_id: str) -> None:
         """删除单个文档的 BM25 状态"""
         ...
 
-    def clear(self) -> None:
-        """清空全部 BM25 状态"""
+    def clear(self, knowledge_base_id: str) -> None:
+        """清空指定知识库的 BM25 状态"""
         ...
 
-    def build_query_sparse_vector(self, tokens: Iterable[str]) -> SparseVector:
+    def build_query_sparse_vector(self, knowledge_base_id: str, tokens: Iterable[str]) -> SparseVector:
         """根据 query token 序列构建稀疏向量"""
         ...
 
-    def build_document_sparse_vector(self, tokens: Iterable[str]) -> SparseVector:
+    def build_document_sparse_vector(self, knowledge_base_id: str, tokens: Iterable[str]) -> SparseVector:
         """根据 document token 序列构建 BM25 稀疏向量"""
         ...
 
@@ -131,10 +131,10 @@ class BM25StateStore(Protocol):
 class IndexManifestStore(Protocol):
     """索引清单持久化存储协议"""
 
-    def save_manifest(self, manifest: Dict) -> None:
+    def save_manifest(self, manifest: Dict, knowledge_base_id: str) -> None:
         """保存当前索引清单"""
         ...
 
-    def load_manifest(self) -> Optional[Dict]:
+    def load_manifest(self, knowledge_base_id: str) -> Optional[Dict]:
         """加载当前索引清单"""
         ...

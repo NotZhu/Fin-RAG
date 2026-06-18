@@ -87,19 +87,19 @@ def test_indexing_updates_bm25_state_for_each_leaf_chunk_before_refresh(tmp_path
             self.replaced = {}
             self.deleted = []
 
-        def replace_document_chunks(self, document_id, chunk_token_counts):
-            self.replaced[document_id] = {chunk_id: dict(counts) for chunk_id, counts in chunk_token_counts.items()}
+        def replace_document_chunks(self, knowledge_base_id, document_id, chunk_token_counts):
+            self.replaced[(knowledge_base_id, document_id)] = {chunk_id: dict(counts) for chunk_id, counts in chunk_token_counts.items()}
 
-        def delete_document(self, document_id):
-            self.deleted.append(document_id)
+        def delete_document(self, knowledge_base_id, document_id):
+            self.deleted.append((knowledge_base_id, document_id))
 
-        def clear(self):
-            self.cleared = True
+        def clear(self, knowledge_base_id):
+            self.cleared = knowledge_base_id
 
-        def build_query_sparse_vector(self, tokens):
+        def build_query_sparse_vector(self, knowledge_base_id, tokens):
             raise AssertionError("该测试不应调用此方法")
 
-        def build_document_sparse_vector(self, tokens):
+        def build_document_sparse_vector(self, knowledge_base_id, tokens):
             raise AssertionError("该测试不应调用此方法")
 
     source = tmp_path / "policy.md"
@@ -111,8 +111,8 @@ def test_indexing_updates_bm25_state_for_each_leaf_chunk_before_refresh(tmp_path
 
     record = system.ingest_uploaded_file(source, "policy.md", "kb-finance")
 
-    assert record["document_id"] in bm25_store.replaced
-    chunk_counts = bm25_store.replaced[record["document_id"]]
+    assert ("kb-finance", record["document_id"]) in bm25_store.replaced
+    chunk_counts = bm25_store.replaced[("kb-finance", record["document_id"])]
     assert chunk_counts
     assert all(chunk_id for chunk_id in chunk_counts)
     assert any("客户" in "".join(counts.keys()) for counts in chunk_counts.values())
@@ -124,19 +124,19 @@ def test_vector_upsert_failure_rolls_back_new_bm25_state(monkeypatch, tmp_path):
             self.replaced = []
             self.deleted = []
 
-        def replace_document_chunks(self, document_id, chunk_token_counts):
-            self.replaced.append(document_id)
+        def replace_document_chunks(self, knowledge_base_id, document_id, chunk_token_counts):
+            self.replaced.append((knowledge_base_id, document_id))
 
-        def delete_document(self, document_id):
-            self.deleted.append(document_id)
+        def delete_document(self, knowledge_base_id, document_id):
+            self.deleted.append((knowledge_base_id, document_id))
 
-        def clear(self):
+        def clear(self, knowledge_base_id):
             pass
 
-        def build_query_sparse_vector(self, tokens):
+        def build_query_sparse_vector(self, knowledge_base_id, tokens):
             raise AssertionError("该测试不应调用此方法")
 
-        def build_document_sparse_vector(self, tokens):
+        def build_document_sparse_vector(self, knowledge_base_id, tokens):
             raise AssertionError("该测试不应调用此方法")
 
     source = tmp_path / "policy.md"
@@ -157,8 +157,8 @@ def test_vector_upsert_failure_rolls_back_new_bm25_state(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="Milvus 写入失败"):
         system.index_registered_document(prepared["document_id"])
 
-    assert bm25_store.replaced == [prepared["document_id"]]
-    assert prepared["document_id"] in bm25_store.deleted
+    assert bm25_store.replaced == [("kb-finance", prepared["document_id"])]
+    assert ("kb-finance", prepared["document_id"]) in bm25_store.deleted
     assert system.document_registry.get(prepared["document_id"]).status == "failed"
 
 

@@ -215,13 +215,14 @@ def test_manifest_uses_minimal_registry_managed_shape(tmp_path):
 def test_manifest_matches_ignores_source_directory_changes(tmp_path):
     class MemoryManifestStore:
         def __init__(self):
-            self.manifest = None
+            self.manifests = {}
 
-        def save_manifest(self, manifest):
-            self.manifest = dict(manifest)
+        def save_manifest(self, manifest, knowledge_base_id):
+            self.manifests[knowledge_base_id] = dict(manifest)
 
-        def load_manifest(self):
-            return dict(self.manifest) if self.manifest is not None else None
+        def load_manifest(self, knowledge_base_id):
+            manifest = self.manifests.get(knowledge_base_id)
+            return dict(manifest) if manifest is not None else None
 
     manifest_store = MemoryManifestStore()
     module = IndexConstructionModule(
@@ -242,13 +243,14 @@ def test_manifest_matches_ignores_source_directory_changes(tmp_path):
 def test_index_module_can_delegate_manifest_persistence_to_store(tmp_path):
     class MemoryManifestStore:
         def __init__(self):
-            self.manifest = None
+            self.manifests = {}
 
-        def save_manifest(self, manifest):
-            self.manifest = dict(manifest)
+        def save_manifest(self, manifest, knowledge_base_id):
+            self.manifests[knowledge_base_id] = dict(manifest)
 
-        def load_manifest(self):
-            return dict(self.manifest) if self.manifest is not None else None
+        def load_manifest(self, knowledge_base_id):
+            manifest = self.manifests.get(knowledge_base_id)
+            return dict(manifest) if manifest is not None else None
 
     manifest_store = MemoryManifestStore()
     module = IndexConstructionModule(
@@ -256,11 +258,11 @@ def test_index_module_can_delegate_manifest_persistence_to_store(tmp_path):
         embed_model=EmbeddingDimensionProbe(1024),
         manifest_store=manifest_store,
     )
-    manifest = module.build_manifest()
+    manifest = module.build_manifest(knowledge_base_id="kb-finance")
 
     module.save_manifest(manifest)
 
-    assert module.load_manifest() == manifest
+    assert module.load_manifest("kb-finance") == manifest
     assert not (tmp_path / "milvus_manifest" / "index_manifest.json").exists()
 
 
@@ -377,8 +379,8 @@ def test_milvus_vector_store_receives_sparse_schema_and_rrf_ranker(monkeypatch, 
 
 def test_bm25_sparse_embedding_function_uses_persistent_state_for_queries_and_documents(postgres_url):
     store = PostgreSQLBM25StateStore(postgres_url)
-    store.replace_document_chunks("doc-a", {"leaf-a": {"风险": 2, "等级": 1}})
-    sparse_embedding = BM25SparseEmbeddingFunction(store)
+    store.replace_document_chunks("kb-finance", "doc-a", {"leaf-a": {"风险": 2, "等级": 1}})
+    sparse_embedding = BM25SparseEmbeddingFunction(store, "kb-finance")
 
     query_vectors = sparse_embedding.encode_queries(["风险等级"])
     document_vectors = sparse_embedding.encode_documents(["风险 风险 等级"])

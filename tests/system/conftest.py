@@ -47,14 +47,23 @@ def fake_postgres_redis_stack(monkeypatch):
         async def adocument_exists(self, doc_id):
             return self.document_exists(doc_id)
 
-        def load_all_nodes(self):
-            return list(self.nodes.values())
+        def load_all_nodes(self, knowledge_base_id):
+            return [
+                node
+                for node in self.nodes.values()
+                if str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
+            ]
 
         def get_node(self, node_id):
             return self.nodes.get(node_id)
 
-        def delete_nodes_by_document(self, document_id):
-            to_delete = [nid for nid, n in self.nodes.items() if (n.metadata or {}).get("document_id") == document_id]
+        def delete_nodes_by_document(self, document_id, knowledge_base_id):
+            to_delete = [
+                nid
+                for nid, n in self.nodes.items()
+                if (n.metadata or {}).get("document_id") == document_id
+                and (n.metadata or {}).get("knowledge_base_id") == knowledge_base_id
+            ]
             for nid in to_delete:
                 del self.nodes[nid]
 

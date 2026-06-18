@@ -106,16 +106,20 @@ class MemoryNodeStore:
         self.node_cache = node_cache
         self.nodes: Dict[str, TextNode] = {}
 
-    def replace_document_nodes(self, document_id: str, nodes: List[TextNode]) -> None:
-        self.delete_document(document_id)
+    def replace_document_nodes(self, document_id: str, nodes: List[TextNode], knowledge_base_id: str) -> None:
+        self.delete_document(document_id, knowledge_base_id)
         for node in nodes:
             self.nodes[node.node_id] = node
             if self.node_cache is not None:
                 self.node_cache.set_node(node)
 
-    def load_all_nodes(self) -> List[TextNode]:
+    def load_all_nodes(self, knowledge_base_id: str) -> List[TextNode]:
         return sorted(
-            self.nodes.values(),
+            [
+                node
+                for node in self.nodes.values()
+                if str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
+            ],
             key=lambda node: (
                 str((node.metadata or {}).get("document_id") or ""),
                 int((node.metadata or {}).get("chunk_level", 0) or 0),
@@ -124,8 +128,8 @@ class MemoryNodeStore:
             ),
         )
 
-    def load_leaf_nodes(self) -> List[TextNode]:
-        return [node for node in self.load_all_nodes() if int((node.metadata or {}).get("chunk_level", 0) or 0) == 3]
+    def load_leaf_nodes(self, knowledge_base_id: str) -> List[TextNode]:
+        return [node for node in self.load_all_nodes(knowledge_base_id) if int((node.metadata or {}).get("chunk_level", 0) or 0) == 3]
 
     def get_node(self, node_id: str) -> Optional[TextNode]:
         if self.node_cache is not None:
@@ -137,11 +141,12 @@ class MemoryNodeStore:
             self.node_cache.set_node(node)
         return node
 
-    def delete_document(self, document_id: str) -> None:
+    def delete_document(self, document_id: str, knowledge_base_id: str) -> None:
         node_ids = [
             node_id
             for node_id, node in self.nodes.items()
             if str((node.metadata or {}).get("document_id") or "") == document_id
+            and str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
         ]
         for node_id in node_ids:
             self.nodes.pop(node_id, None)
@@ -163,67 +168,90 @@ class MemoryNodeStore:
 class MemoryBM25StateStore:
     def __init__(self, database_url: str | None = None):
         self.database_url = database_url
-        self.term_ids: Dict[str, int] = {}
-        self.documents: Dict[str, tuple[str, int]] = {}
-        self.term_counts: Dict[str, Dict[str, int]] = {}
-        self.dfs: Dict[str, int] = {}
+        self.term_ids: Dict[tuple[str, str], int] = {}
+        self.documents: Dict[tuple[str, str], tuple[str, int]] = {}
+        self.term_counts: Dict[tuple[str, str], Dict[str, int]] = {}
+        self.dfs: Dict[tuple[str, str], int] = {}
 
-    def replace_document_chunks(self, document_id: str, chunk_token_counts: Dict[str, Dict[str, int]]) -> None:
-        self.delete_document(document_id)
+    def replace_document_chunks(self, knowledge_base_id: str, document_id: str, chunk_token_counts: Dict[str, Dict[str, int]]) -> None:
+        self.delete_document(knowledge_base_id, document_id)
         for chunk_id, token_counts in chunk_token_counts.items():
             clean_counts = {str(term).strip().lower(): int(count) for term, count in token_counts.items() if term and int(count) > 0}
-            self.documents[chunk_id] = (document_id, sum(clean_counts.values()))
-            self.term_counts[chunk_id] = clean_counts
+            scoped_chunk_id = (knowledge_base_id, chunk_id)
+            self.documents[scoped_chunk_id] = (document_id, sum(clean_counts.values()))
+            self.term_counts[scoped_chunk_id] = clean_counts
             for term in clean_counts:
-                self._ensure_term(term)
-        self._refresh_dfs()
+                self._ensure_term(knowledge_base_id, term)
+        self._refresh_dfs(knowledge_base_id)
 
-    def delete_document(self, document_id: str) -> None:
-        chunk_ids = [chunk_id for chunk_id, (doc_id, _) in self.documents.items() if doc_id == document_id]
+    def delete_document(self, knowledge_base_id: str, document_id: str) -> None:
+        chunk_ids = [
+            chunk_id
+            for chunk_id, (doc_id, _) in self.documents.items()
+            if chunk_id[0] == knowledge_base_id and doc_id == document_id
+        ]
         for chunk_id in chunk_ids:
             self.documents.pop(chunk_id, None)
             self.term_counts.pop(chunk_id, None)
-        self._refresh_dfs()
+        self._refresh_dfs(knowledge_base_id)
 
-    def clear(self) -> None:
-        self.documents.clear()
-        self.term_counts.clear()
-        self.dfs = {term: 0 for term in self.term_ids}
+    def clear(self, knowledge_base_id: str) -> None:
+        for chunk_id in [chunk_id for chunk_id in self.documents if chunk_id[0] == knowledge_base_id]:
+            self.documents.pop(chunk_id, None)
+            self.term_counts.pop(chunk_id, None)
+        self._refresh_dfs(knowledge_base_id)
 
-    def build_query_sparse_vector(self, tokens: Iterable[str]) -> SparseVector:
+    def build_query_sparse_vector(self, knowledge_base_id: str, tokens: Iterable[str]) -> SparseVector:
         token_counts = self._token_counts(tokens)
-        indices = [self.term_ids[term] for term in token_counts if term in self.term_ids]
+        indices = [
+            self.term_ids[(knowledge_base_id, term)]
+            for term in token_counts
+            if (knowledge_base_id, term) in self.term_ids
+        ]
         return SparseVector(indices=indices, values=[1.0 for _ in indices], token_count=sum(token_counts.values()))
 
-    def build_document_sparse_vector(self, tokens: Iterable[str]) -> SparseVector:
+    def build_document_sparse_vector(self, knowledge_base_id: str, tokens: Iterable[str]) -> SparseVector:
         token_counts = self._token_counts(tokens)
         token_count = sum(token_counts.values())
         if not token_counts:
             return SparseVector(indices=[], values=[], token_count=0)
-        total_documents = len(self.documents)
-        avgdl = sum(length for _, length in self.documents.values()) / total_documents if total_documents else token_count
+        scoped_documents = {
+            chunk_id: value
+            for chunk_id, value in self.documents.items()
+            if chunk_id[0] == knowledge_base_id
+        }
+        total_documents = len(scoped_documents)
+        avgdl = sum(length for _, length in scoped_documents.values()) / total_documents if total_documents else token_count
         indices: List[int] = []
         values: List[float] = []
         for term, term_frequency in token_counts.items():
-            if term not in self.term_ids:
+            scoped_term = (knowledge_base_id, term)
+            if scoped_term not in self.term_ids:
                 continue
-            document_frequency = self.dfs.get(term, 0)
+            document_frequency = self.dfs.get(scoped_term, 0)
             idf = math.log(1.0 + ((total_documents - document_frequency + 0.5) / (document_frequency + 0.5))) if total_documents else 0.0
             denominator = term_frequency + 1.5 * (1.0 - 0.75 + 0.75 * (token_count / (avgdl or token_count or 1)))
             weight = idf * ((term_frequency * 2.5) / denominator) if denominator else 0.0
             if weight:
-                indices.append(self.term_ids[term])
+                indices.append(self.term_ids[scoped_term])
                 values.append(float(weight))
         return SparseVector(indices=indices, values=values, token_count=token_count)
 
-    def _ensure_term(self, term: str) -> None:
-        if term not in self.term_ids:
-            self.term_ids[term] = len(self.term_ids) + 1
+    def _ensure_term(self, knowledge_base_id: str, term: str) -> None:
+        key = (knowledge_base_id, term)
+        if key not in self.term_ids:
+            self.term_ids[key] = len(self.term_ids) + 1
 
-    def _refresh_dfs(self) -> None:
-        self.dfs = {term: 0 for term in self.term_ids}
-        for term in self.term_ids:
-            self.dfs[term] = sum(1 for counts in self.term_counts.values() if term in counts)
+    def _refresh_dfs(self, knowledge_base_id: str) -> None:
+        for key in [key for key in self.dfs if key[0] == knowledge_base_id]:
+            self.dfs[key] = 0
+        for scoped_term in [key for key in self.term_ids if key[0] == knowledge_base_id]:
+            _, term = scoped_term
+            self.dfs[scoped_term] = sum(
+                1
+                for scoped_chunk_id, counts in self.term_counts.items()
+                if scoped_chunk_id[0] == knowledge_base_id and term in counts
+            )
 
     @staticmethod
     def _token_counts(tokens: Iterable[str]) -> Dict[str, int]:
@@ -238,13 +266,14 @@ class MemoryBM25StateStore:
 class MemoryIndexManifestStore:
     def __init__(self, database_url: str | None = None):
         self.database_url = database_url
-        self.manifest: Optional[Dict[str, Any]] = None
+        self.manifests: Dict[str, Dict[str, Any]] = {}
 
-    def save_manifest(self, manifest: Dict[str, Any]) -> None:
-        self.manifest = dict(manifest)
+    def save_manifest(self, manifest: Dict[str, Any], knowledge_base_id: str) -> None:
+        self.manifests[knowledge_base_id] = dict(manifest)
 
-    def load_manifest(self) -> Optional[Dict[str, Any]]:
-        return dict(self.manifest) if self.manifest is not None else None
+    def load_manifest(self, knowledge_base_id: str) -> Optional[Dict[str, Any]]:
+        manifest = self.manifests.get(knowledge_base_id)
+        return dict(manifest) if manifest is not None else None
 
 
 class MemoryKnowledgeBaseRegistry:

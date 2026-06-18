@@ -240,19 +240,20 @@ def test_build_knowledge_base_assumes_registry_management(tmp_path):
 
     system = SimpleNamespace(
         _write_lock=FakeWriteLock(),
-        config=SimpleNamespace(data_path=str(tmp_path)),
+        config=SimpleNamespace(data_path=str(tmp_path), knowledge_base_id="kb-finance"),
         data_module=SimpleNamespace(storage_context=None),
         index_module=SimpleNamespace(load_index=lambda *args, **kwargs: None, manifest_matches=lambda m: False),
         _ensure_modules=lambda: None,
-        _build_expected_manifest=lambda: {"schema_version": 1},
-        _load_leaf_nodes_from_docstore=lambda: [],
+        _configure_knowledge_base_scope_locked=lambda knowledge_base_id: knowledge_base_id,
+        _build_expected_manifest=lambda knowledge_base_id: {"schema_version": 1},
+        _load_leaf_nodes_from_docstore=lambda knowledge_base_id: [],
         _refresh_retrieval=lambda vector_index, leaf_nodes: calls.append(("refresh", vector_index, leaf_nodes)),
-        _full_rebuild_locked=lambda: calls.append(("rebuild",)),
+        _full_rebuild_locked=lambda knowledge_base_id: calls.append(("rebuild", knowledge_base_id)),
     )
 
     KnowledgeBaseService(system).build_knowledge_base()
 
-    assert calls == [("rebuild",)]
+    assert calls == [("rebuild", "kb-finance")]
 
 
 def test_load_leaf_nodes_from_docstore_returns_only_leaf_nodes():
@@ -260,7 +261,9 @@ def test_load_leaf_nodes_from_docstore_returns_only_leaf_nodes():
     leaf_nodes = [all_nodes[1]]
     captured = {}
     system = FinRAGSystem.__new__(FinRAGSystem)
-    system.llama_docstore = SimpleNamespace(load_all_nodes=lambda: all_nodes)
+    system.llama_docstore = SimpleNamespace(load_all_nodes=lambda knowledge_base_id: all_nodes)
+    system.index_module = SimpleNamespace(sparse_embedding_function=None)
+    system.knowledge_base_scope = lambda knowledge_base_id: SimpleNamespace(knowledge_base_id=knowledge_base_id)
 
     def load_prepared_nodes(nodes):
         captured["nodes"] = nodes
@@ -268,7 +271,7 @@ def test_load_leaf_nodes_from_docstore_returns_only_leaf_nodes():
 
     system.data_module = SimpleNamespace(load_prepared_nodes=load_prepared_nodes)
 
-    assert system._load_leaf_nodes_from_docstore() is leaf_nodes
+    assert system._load_leaf_nodes_from_docstore("kb-finance") is leaf_nodes
     assert captured["nodes"] is all_nodes
 
 
@@ -298,4 +301,4 @@ def test_rebuild_via_pipeline_propagates_pipeline_errors(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="pipeline failed"):
-        system._rebuild_via_pipeline()
+        system._rebuild_via_pipeline("kb-finance")

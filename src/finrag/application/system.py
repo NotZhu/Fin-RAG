@@ -407,17 +407,41 @@ class FinRAGSystem:
         # 同步文档注册表引用，确保最新状态被使用
         self.data_module.document_registry = self.document_registry
 
-    def _build_expected_manifest(self) -> Dict[str, Any]:
+    def _configure_knowledge_base_scope_locked(self, knowledge_base_id: str) -> str:
+        """
+        将数据模块和稀疏向量函数切换到指定知识库上下文
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            校验后的知识库 ID
+        """
+        scope = self.knowledge_base_scope(knowledge_base_id)
+        if self.data_module is not None:
+            self.data_module.knowledge_base_id = scope.knowledge_base_id
+        if self.index_module is not None:
+            # 获取稀疏向量函数实例
+            sparse_embedding = getattr(self.index_module, "sparse_embedding_function", None)
+            # 如果稀疏向量函数支持设置知识库 ID，则调用设置方法
+            if hasattr(sparse_embedding, "set_knowledge_base_id"):
+                sparse_embedding.set_knowledge_base_id(scope.knowledge_base_id)
+        return scope.knowledge_base_id
+
+    def _build_expected_manifest(self, knowledge_base_id: str) -> Dict[str, Any]:
         """基于当前配置和活跃文档构建索引清单"""
         assert self.index_module is not None
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
         # 从文档注册表获取所有公开文档
-        public_docs = self.document_registry.list_public() if self.document_registry is not None else []
+        public_docs = self.document_registry.list_public(knowledge_base_id) if self.document_registry is not None else []
         # 从数据模块获取所有叶子节点
-        leaf_nodes = getattr(self.data_module, "chunks", None) or []
+        leaf_nodes = [
+            node
+            for node in (getattr(self.data_module, "chunks", None) or [])
+            if str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
+        ]
         return self.index_module.build_manifest(
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
-            knowledge_base_id=self.config.knowledge_base_id,
+            knowledge_base_id=knowledge_base_id,
             llamaindex_index_store_dir=self.config.llamaindex_index_store_dir, # LlamaIndex 索引存储目录
             index_ids=["finrag-auto-merge"], # 索引 ID 列表
             document_count=len(public_docs), # 文档数量
@@ -425,10 +449,11 @@ class FinRAGSystem:
             summary_document_count=len(public_docs) if self.summary_index is not None else 0, # 摘要文档数量
         )
 
-    def _full_rebuild_locked(self, *, sync_source_registry: bool = False) -> None:
+    def _full_rebuild_locked(self, knowledge_base_id: str, *, sync_source_registry: bool = False) -> None:
         """
         全量重建索引
         Args:
+            knowledge_base_id: 知识库 ID
             sync_source_registry: 是否同步从源注册目录加载文档
         Returns:
             无返回值
@@ -436,11 +461,16 @@ class FinRAGSystem:
         self._ensure_modules()
         assert self.data_module is not None
         assert self.index_module is not None
+        # 将数据模块和稀疏向量函数切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(knowledge_base_id)
 
         restore_registry = self.data_module.document_registry
+        # 保存当前数据路径
+        restore_data_path = getattr(self.data_module, "data_path", self.config.data_path)
         # 如果同步从源注册目录加载文档，先清空数据模块的文档注册表
         if sync_source_registry:
             self.data_module.document_registry = None
+            self.data_module.data_path = str(self.knowledge_base_scope(knowledge_base_id).source_root)
 
         try:
             # 加载文档
@@ -449,24 +479,27 @@ class FinRAGSystem:
             if sync_source_registry:
                 # 恢复数据模块的文档注册表
                 self.data_module.document_registry = restore_registry
+                self.data_module.data_path = restore_data_path
 
         # 如果没有文档，直接清空索引
         if not self.data_module.documents:
             # 清空索引后返回的空索引对象
             vector_index = self.index_module.clear_index(storage_context=self.data_module.storage_context)
+            # 清空 BM25 索引
+            self._replace_bm25_all_locked(knowledge_base_id, [])
             # 保存空清单
-            self.index_module.save_manifest(self._build_expected_manifest())
+            self.index_module.save_manifest(self._build_expected_manifest(knowledge_base_id))
             # 刷新检索
             self._refresh_retrieval(vector_index, [])
             return
 
-        leaf_nodes = self._rebuild_via_pipeline(sync_source_registry=sync_source_registry)
+        leaf_nodes = self._rebuild_via_pipeline(knowledge_base_id, sync_source_registry=sync_source_registry)
         # 保存索引清单
-        self.index_module.save_manifest(self._build_expected_manifest())
+        self.index_module.save_manifest(self._build_expected_manifest(knowledge_base_id))
         if leaf_nodes:
             # 加载索引
             vector_index = self.index_module.load_index(
-                self._build_expected_manifest(),
+                self._build_expected_manifest(knowledge_base_id),
                 storage_context=self.data_module.storage_context,
             )
             if vector_index is None:
@@ -480,10 +513,11 @@ class FinRAGSystem:
         # 刷新检索结果
         self._refresh_retrieval(vector_index, leaf_nodes or [])
 
-    def _rebuild_via_pipeline(self, *, sync_source_registry: bool = False) -> list:
+    def _rebuild_via_pipeline(self, knowledge_base_id: str, *, sync_source_registry: bool = False) -> list:
         """
         IngestionPipeline 重建索引流程
         Args:
+            knowledge_base_id: 知识库 ID
             sync_source_registry: 是否同步从源注册目录加载文档
         Returns:
             新构建的叶子节点列表
@@ -514,15 +548,16 @@ class FinRAGSystem:
 
         # 如果同步从源注册目录加载文档，重写文档注册表
         if sync_source_registry:
-            self._replace_registry_from_source_documents(leaf_nodes)
+            self._replace_registry_from_source_documents(knowledge_base_id, leaf_nodes)
         # 重置 BM25 模型
-        self._replace_bm25_all_locked(leaf_nodes)
+        self._replace_bm25_all_locked(knowledge_base_id, leaf_nodes)
         return leaf_nodes
 
-    def _replace_registry_from_source_documents(self, leaf_nodes: List[TextNode]) -> None:
+    def _replace_registry_from_source_documents(self, knowledge_base_id: str, leaf_nodes: List[TextNode]) -> None:
         """
         根据源目录加载结果重写文档注册表
         Args:
+            knowledge_base_id: 知识库 ID
             leaf_nodes: 全量重建得到的叶子节点列表
         Returns:
             无返回值
@@ -536,6 +571,7 @@ class FinRAGSystem:
             for node in leaf_nodes
             if (node.metadata or {}).get("document_id")
         )
+        # 构建文档记录映射
         records: Dict[str, DocumentRecord] = {}
         for doc in self.data_module.documents:
             metadata = doc.metadata or {}
@@ -550,18 +586,25 @@ class FinRAGSystem:
                 filename=str(metadata.get("filename") or path.name),
                 file_type=str(metadata.get("file_type") or path.suffix.lower().lstrip(".")),
                 content_hash=compute_content_hash(path),
-                knowledge_base_id=str(metadata.get("knowledge_base_id") or self.config.knowledge_base_id),
+                knowledge_base_id=str(metadata.get("knowledge_base_id") or knowledge_base_id),
                 status="indexed",
                 chunk_count=int(chunk_count_by_document.get(document_id, 0)),
                 upload_time=upload_time,
             )
-        self.document_registry.records = records
+        # 保留其他知识库的文档记录
+        preserved_records = {
+            document_id: record
+            for document_id, record in self.document_registry.records.items()
+            if record.knowledge_base_id != knowledge_base_id
+        }
+        self.document_registry.records = {**preserved_records, **records}
         self.document_registry.save()
 
-    def _replace_bm25_all_locked(self, leaf_nodes: List[TextNode]) -> None:
+    def _replace_bm25_all_locked(self, knowledge_base_id: str, leaf_nodes: List[TextNode]) -> None:
         """
         用当前全部叶子节点重写 BM25 稀疏状态
         Args:
+            knowledge_base_id: 知识库 ID
             leaf_nodes: 当前资料库全部叶子节点
         Returns:
             无返回值
@@ -569,21 +612,25 @@ class FinRAGSystem:
         if self.bm25_store is None:
             return
         # 清空 BM25 稀疏状态
-        self.bm25_store.clear()
+        self.bm25_store.clear(knowledge_base_id)
         # 按文档 ID 分组叶子节点
         leaf_nodes_by_document: Dict[str, List[TextNode]] = {}
         for node in leaf_nodes:
+            # 过滤出当前知识库的叶子节点
+            if str((node.metadata or {}).get("knowledge_base_id") or "") != knowledge_base_id:
+                continue
             document_id = str((node.metadata or {}).get("document_id") or "")
             if document_id:
                 leaf_nodes_by_document.setdefault(document_id, []).append(node)
         # 逐文档写入 BM25 稀疏状态，确保同一文档的分块写入操作连续，避免跨文档交叉写入导致的状态不一致问题
         for document_id, document_leaf_nodes in leaf_nodes_by_document.items():
-            self._replace_bm25_document_chunks_locked(document_id, document_leaf_nodes)
+            self._replace_bm25_document_chunks_locked(knowledge_base_id, document_id, document_leaf_nodes)
 
-    def _replace_bm25_document_chunks_locked(self, document_id: str, leaf_nodes: List[TextNode]) -> None:
+    def _replace_bm25_document_chunks_locked(self, knowledge_base_id: str, document_id: str, leaf_nodes: List[TextNode]) -> None:
         """
         重写单个文档的 BM25 分块词频状态
         Args:
+            knowledge_base_id: 知识库 ID
             document_id: 待更新的文档 ID
             leaf_nodes: 该文档的叶子节点列表
         Returns:
@@ -600,26 +647,28 @@ class FinRAGSystem:
             tokens = tokenize_chinese_text(node.get_content())
             chunk_token_counts[chunk_id] = dict(Counter(tokens))
         # 重写该文档的 BM25 分块词频状态
-        self.bm25_store.replace_document_chunks(document_id, chunk_token_counts)
+        self.bm25_store.replace_document_chunks(knowledge_base_id, document_id, chunk_token_counts)
 
-    def _ensure_incremental_index_ready_locked(self) -> None:
+    def _ensure_incremental_index_ready_locked(self, knowledge_base_id: str) -> None:
         """
         确保增量索引状态与当前文档注册表一致
         """
         self._ensure_modules()
         assert self.data_module is not None
         assert self.index_module is not None
+        # 切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(knowledge_base_id)
 
         # 构建预期索引清单
-        expected_manifest = self._build_expected_manifest()
+        expected_manifest = self._build_expected_manifest(knowledge_base_id)
 
         # 如果索引清单与预期清单不匹配，执行全量重建
-        if self.index_module.load_manifest() is not None and not self.index_module.manifest_matches(expected_manifest):
-            self._full_rebuild_locked()
+        if self.index_module.load_manifest(knowledge_base_id) is not None and not self.index_module.manifest_matches(expected_manifest):
+            self._full_rebuild_locked(knowledge_base_id)
             return
         
         # 加载当前资料库全部叶子节点
-        leaf_nodes = self._load_leaf_nodes_from_docstore()
+        leaf_nodes = self._load_leaf_nodes_from_docstore(knowledge_base_id)
         # 加载当前索引状态
         vector_index = self.index_module.load_index(expected_manifest, storage_context=self.data_module.storage_context)
         # 如果索引状态为空且有叶子节点，构建索引
@@ -628,7 +677,7 @@ class FinRAGSystem:
                 leaf_nodes, storage_context=self.data_module.storage_context, reset=True,
             )
         # 保存当前索引状态
-        self.index_module.save_manifest(self._build_expected_manifest())
+        self.index_module.save_manifest(self._build_expected_manifest(knowledge_base_id))
         if vector_index is not None:
             self._refresh_retrieval(vector_index, leaf_nodes)
 
@@ -648,15 +697,17 @@ class FinRAGSystem:
         
         # 获取文档记录
         record = self.document_registry.get(document_id)
+        # 切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(record.knowledge_base_id)
         # 解析文档内容，生成节点
         all_nodes, leaf_nodes = self.data_module.chunk_single_document(record)
         if not all_nodes:
             raise ValueError(f"文档 {document_id!r} 未生成可索引节点")
 
-        self._ensure_incremental_index_ready_locked()
+        self._ensure_incremental_index_ready_locked(knowledge_base_id)
 
         # 加载当前资料库全部节点
-        existing_nodes = self.llama_docstore.load_all_nodes() if self.llama_docstore is not None else []
+        existing_nodes = self.llama_docstore.load_all_nodes(knowledge_base_id) if self.llama_docstore is not None else []
         # 筛选出当前文档的所有节点
         previous_document_nodes = [node for node in existing_nodes if (node.metadata or {}).get("document_id") == document_id]
         # 筛选出其他文档的所有节点
@@ -667,7 +718,7 @@ class FinRAGSystem:
             # 写入当前文档所有节点到 docstore
             self.llama_docstore.add_documents(all_nodes)
         # 重写当前文档的 BM25 分块词频状态
-        self._replace_bm25_document_chunks_locked(document_id, leaf_nodes)
+        self._replace_bm25_document_chunks_locked(knowledge_base_id, document_id, leaf_nodes)
 
         try:
             # 删除当前文档的所有向量索引条目
@@ -677,16 +728,16 @@ class FinRAGSystem:
         except Exception:
             if self.bm25_store is not None:
                 # 删除当前文档的所有 BM25 索引条目
-                self.bm25_store.delete_document(document_id)
+                self.bm25_store.delete_document(knowledge_base_id, document_id)
             if self.llama_docstore is not None and previous_document_nodes:
                 # 写入当前文档所有节点到 docstore
                 self.llama_docstore.add_documents(previous_document_nodes)
             elif self.llama_docstore is not None:
                 # 删除当前文档的所有节点store 条目
-                self.llama_docstore.delete_nodes_by_document(document_id)
+                self.llama_docstore.delete_nodes_by_document(document_id, knowledge_base_id)
             raise
         # 刷新索引
-        self._reload_from_store_and_refresh_locked(vector_index)
+        self._reload_from_store_and_refresh_locked(knowledge_base_id, vector_index)
         # 标记文档为已索引
         self.document_registry.mark_indexed(document_id, chunk_count=len(leaf_nodes))
         if retire_replacements:
@@ -695,44 +746,51 @@ class FinRAGSystem:
         # 返回公开文档记录
         return self._public_document(document_id)
 
-    def _delete_document_index_entries_locked(self, document_id: str) -> None:
+    def _delete_document_index_entries_locked(self, knowledge_base_id: str, document_id: str) -> None:
         """删除指定 document_id 的向量、BM25 和 docstore 条目"""
         assert self.index_module is not None
+        # 切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(knowledge_base_id)
         # 删除向量索引条目
         self.index_module.delete_vectors_by_document_id(document_id)
         # 删除 BM25 索引条目
         if self.bm25_store is not None:
-            self.bm25_store.delete_document(document_id)
+            self.bm25_store.delete_document(knowledge_base_id, document_id)
         # 删除 docstore 条目
         if self.llama_docstore is not None:
-            self.llama_docstore.delete_nodes_by_document(document_id)
+            self.llama_docstore.delete_nodes_by_document(document_id, knowledge_base_id)
 
-    def _load_leaf_nodes_from_docstore(self) -> List[TextNode]:
+    def _load_leaf_nodes_from_docstore(self, knowledge_base_id: str) -> List[TextNode]:
         """从 llama_docstore 恢复全部层级节点并返回叶子节点"""
         assert self.data_module is not None
+        # 切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(knowledge_base_id)
 
         if self.llama_docstore is not None:
-            all_nodes = self.llama_docstore.load_all_nodes()
+            all_nodes = self.llama_docstore.load_all_nodes(knowledge_base_id)
             if all_nodes:
                 # 返回所有叶子节点
                 return self.data_module.load_prepared_nodes(all_nodes)
         return []
 
-    def _reload_from_store_and_refresh_locked(self, vector_index: Optional[Any] = None) -> Any:
+    def _reload_from_store_and_refresh_locked(self, knowledge_base_id: str, vector_index: Optional[Any] = None) -> Any:
         """
         从 docstore 重新加载叶子节点并刷新检索引擎
         Args:
+            knowledge_base_id: 知识库 ID
             vector_index: 可选的向量索引条目，用于更新索引
         Returns:
             更新后的向量索引条目
         """
         assert self.data_module is not None
         assert self.index_module is not None
+        # 切换到指定知识库上下文
+        knowledge_base_id = self._configure_knowledge_base_scope_locked(knowledge_base_id)
         
         # 从 docstore 加载所有叶子节点
-        leaf_nodes = self._load_leaf_nodes_from_docstore()
+        leaf_nodes = self._load_leaf_nodes_from_docstore(knowledge_base_id)
         # 构建索引清单
-        manifest = self._build_expected_manifest()
+        manifest = self._build_expected_manifest(knowledge_base_id)
         # 加载索引
         loaded_index = self.index_module.load_index(manifest, storage_context=self.data_module.storage_context)
 
@@ -774,13 +832,13 @@ class FinRAGSystem:
             return
         for record in replaced_records:
             # 删除旧文档的所有向量索引
-            self._delete_document_index_entries_locked(record.document_id)
+            self._delete_document_index_entries_locked(record.knowledge_base_id, record.document_id)
             # 删除旧文档的托管文件
             self._managed_source_files().delete_managed_source_file(record.source_path)
             # 标记旧文档已删除
             self.document_registry.mark_deleted(record.document_id)
         # 刷新检索状态
-        self._reload_from_store_and_refresh_locked()
+        self._reload_from_store_and_refresh_locked(indexed_record.knowledge_base_id)
 
     def _refresh_retrieval(self, vector_index: Any, leaf_nodes: List[TextNode]) -> None:
         """

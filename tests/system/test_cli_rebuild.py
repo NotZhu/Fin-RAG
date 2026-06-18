@@ -77,7 +77,8 @@ def test_cli_eval_invokes_ragas_evaluation(monkeypatch, tmp_path, capsys):
 def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp_path):
     import finrag.indexing.nodes as nodes_module
 
-    source = tmp_path / "source.md"
+    source = tmp_path / "finance" / "source.md"
+    source.parent.mkdir(parents=True)
     source.write_text("# 新源文件\n客户风险等级应与产品风险等级匹配", encoding="utf-8")
     system = FinRAGSystem(RAGConfig(data_path=str(tmp_path)))
     system.document_registry.records = {
@@ -87,7 +88,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
             filename="missing.md",
             file_type="md",
             content_hash="sha256:old",
-            knowledge_base_id="kb-finance",
+            knowledge_base_id="finance",
             status="indexed",
             chunk_count=1,
         )
@@ -113,7 +114,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
                             "source_path": str(source),
                             "filename": "source.md",
                             "file_type": "md",
-                            "knowledge_base_id": "kb-finance",
+                            "knowledge_base_id": "finance",
                         },
                     )
                 ]
@@ -138,7 +139,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
         def save_manifest(self, manifest):
             self.manifest = dict(manifest)
 
-        def load_manifest(self):
+        def load_manifest(self, knowledge_base_id):
             return self.manifest
 
         def build_manifest(self, *, chunk_size=300, chunk_overlap=60, **kwargs):
@@ -156,7 +157,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
                         "source_path": str(source),
                         "filename": "source.md",
                         "file_type": "md",
-                        "knowledge_base_id": "kb-finance",
+                        "knowledge_base_id": "finance",
                         "chunk_id": "source-doc-leaf",
                         "chunk_level": 3,
                         "chunk_idx": 0,

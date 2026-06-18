@@ -13,10 +13,20 @@ def _store(postgres_url):
 
 def test_store_persists_and_loads_nodes(postgres_url):
     store = _store(postgres_url)
-    node = TextNode(text="客户风险等级匹配", id_="chunk-test", metadata={"document_id": "doc-1", "chunk_id": "chunk-test", "chunk_level": 3, "chunk_idx": 0})
+    node = TextNode(
+        text="客户风险等级匹配",
+        id_="chunk-test",
+        metadata={
+            "document_id": "doc-1",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "chunk-test",
+            "chunk_level": 3,
+            "chunk_idx": 0,
+        },
+    )
     store.add_documents([node])
 
-    loaded = store.load_all_nodes()
+    loaded = store.load_all_nodes("kb-finance")
     assert any(n.node_id == "chunk-test" for n in loaded)
 
     retrieved = store.get_node("chunk-test")
@@ -26,10 +36,20 @@ def test_store_persists_and_loads_nodes(postgres_url):
 
 def test_store_deletes_nodes_by_document(postgres_url):
     store = _store(postgres_url)
-    node = TextNode(text="删除测试", id_="chunk-del", metadata={"document_id": "doc-del", "chunk_id": "chunk-del", "chunk_level": 3, "chunk_idx": 0})
+    node = TextNode(
+        text="删除测试",
+        id_="chunk-del",
+        metadata={
+            "document_id": "doc-del",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "chunk-del",
+            "chunk_level": 3,
+            "chunk_idx": 0,
+        },
+    )
     store.add_documents([node])
 
-    store.delete_nodes_by_document("doc-del")
+    store.delete_nodes_by_document("doc-del", "kb-finance")
     assert store.get_node("chunk-del") is None
 
 
@@ -38,18 +58,30 @@ def test_store_deletes_document_ref_doc_and_hashes(postgres_url):
     target_node = TextNode(
         text="删除关联状态",
         id_="chunk-del-associated",
-        metadata={"document_id": "doc-del", "chunk_id": "chunk-del-associated", "chunk_level": 3, "chunk_idx": 0},
+        metadata={
+            "document_id": "doc-del",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "chunk-del-associated",
+            "chunk_level": 3,
+            "chunk_idx": 0,
+        },
     )
     other_node = TextNode(
         text="其他文档保留",
         id_="chunk-keep",
-        metadata={"document_id": "doc-keep", "chunk_id": "chunk-keep", "chunk_level": 3, "chunk_idx": 0},
+        metadata={
+            "document_id": "doc-keep",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "chunk-keep",
+            "chunk_level": 3,
+            "chunk_idx": 0,
+        },
     )
     store.add_documents([target_node, other_node])
     store.set_document_hash("chunk-del-associated", "hash-del")
     store.set_document_hash("chunk-keep", "hash-keep")
 
-    store.delete_nodes_by_document("doc-del")
+    store.delete_nodes_by_document("doc-del", "kb-finance")
 
     assert store.get_node("chunk-del-associated") is None
     assert store.get_document_hash("chunk-del-associated") is None
@@ -85,15 +117,19 @@ def test_delete_nodes_by_document_cleans_associated_docstore_tables(monkeypatch)
     store = stores_module.PostgreSQLLlamaIndexDocumentStore("postgresql://test")
     statements.clear()
 
-    store.delete_nodes_by_document("doc-del")
+    store.delete_nodes_by_document("doc-del", "kb-finance")
 
     assert statements == [
         (
             "DELETE FROM finrag_llama_doc_hashes "
-            "WHERE chunk_id IN (SELECT chunk_id FROM finrag_chunks WHERE document_id = %s)",
-            ("doc-del",),
+            "WHERE chunk_id IN ( SELECT chunk_id FROM finrag_chunks "
+            "WHERE knowledge_base_id = %s AND document_id = %s )",
+            ("kb-finance", "doc-del"),
         ),
-        ("DELETE FROM finrag_chunks WHERE document_id = %s", ("doc-del",)),
+        (
+            "DELETE FROM finrag_chunks WHERE knowledge_base_id = %s AND document_id = %s",
+            ("kb-finance", "doc-del"),
+        ),
         ("DELETE FROM finrag_ref_docs WHERE ref_doc_id = %s", ("doc-del",)),
     ]
 

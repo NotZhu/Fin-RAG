@@ -58,6 +58,7 @@ MILVUS_DYNAMIC_METADATA_FIELD_NAMES = {"page_number"} # 允许作为动态 metad
 MANIFEST_COMPARE_KEYS = [ # 判断现有索引是否可复用时参与比较的 manifest 字段
     "schema_version",
     "index_type",
+    "knowledge_base_id",
     "embedding",
     "milvus",
     "chunking",
@@ -83,13 +84,23 @@ DASHSCOPE_EMBED_BATCH_SIZE = 10 # DashScope embedding 批量请求大小
 class BM25SparseEmbeddingFunction(BaseSparseEmbeddingFunction):
     """将 PostgreSQL BM25StateStore 稀疏向量接入 LlamaIndex Milvus 混合检索钩子"""
 
-    def __init__(self, bm25_store: Any):
+    def __init__(self, bm25_store: Any, knowledge_base_id: str):
         """
         初始化 BM25 稀疏向量函数
         Args:
             bm25_store: 提供稀疏向量构建能力的 BM25 状态存储
+            knowledge_base_id: 当前知识库 ID
         """
         self.bm25_store = bm25_store
+        self.knowledge_base_id = knowledge_base_id
+
+    def set_knowledge_base_id(self, knowledge_base_id: str) -> None:
+        """
+        切换稀疏向量构建所使用的知识库上下文
+        Args:
+            knowledge_base_id: 当前知识库 ID
+        """
+        self.knowledge_base_id = knowledge_base_id
 
     def encode_queries(self, queries: List[str]) -> List[Dict[int, float]]:
         """
@@ -100,7 +111,12 @@ class BM25SparseEmbeddingFunction(BaseSparseEmbeddingFunction):
             每个查询对应的稀疏向量字典列表
         """
         return [
-            self._sparse_to_dict(self.bm25_store.build_query_sparse_vector(tokenize_chinese_text(query)))
+            self._sparse_to_dict(
+                self.bm25_store.build_query_sparse_vector(
+                    self.knowledge_base_id,
+                    tokenize_chinese_text(query),
+                )
+            )
             for query in queries
         ]
 
@@ -113,7 +129,12 @@ class BM25SparseEmbeddingFunction(BaseSparseEmbeddingFunction):
             每个文档对应的稀疏向量字典列表
         """
         return [
-            self._sparse_to_dict(self.bm25_store.build_document_sparse_vector(tokenize_chinese_text(document)))
+            self._sparse_to_dict(
+                self.bm25_store.build_document_sparse_vector(
+                    self.knowledge_base_id,
+                    tokenize_chinese_text(document),
+                )
+            )
             for document in documents
         ]
 
@@ -274,15 +295,17 @@ class IndexConstructionModule:
         }
         return manifest
 
-    def load_manifest(self) -> Optional[Dict[str, Any]]:
+    def load_manifest(self, knowledge_base_id: str) -> Optional[Dict[str, Any]]:
         """
         从持久化存储读取索引清单
+        Args:
+            knowledge_base_id: 知识库 ID
         Returns:
             索引清单字典，读取失败或不存在时返回 None
         """
         if self.manifest_store is not None:
             try:
-                return self.manifest_store.load_manifest()
+                return self.manifest_store.load_manifest(knowledge_base_id)
             except Exception as exc:
                 logger.warning("读取 PostgreSQL 索引清单失败: %s", exc)
                 return None
@@ -295,7 +318,7 @@ class IndexConstructionModule:
             manifest: 待保存的索引清单字典
         """
         if self.manifest_store is not None:
-            self.manifest_store.save_manifest(manifest)
+            self.manifest_store.save_manifest(manifest, str(manifest.get("knowledge_base_id") or ""))
             return
         raise RuntimeError("持久化 manifest 需要 PostgreSQL index manifest store")
 
@@ -307,7 +330,8 @@ class IndexConstructionModule:
         Returns:
             匹配时返回 True，否则返回 False
         """
-        actual = self.load_manifest()
+        knowledge_base_id = str(expected_manifest.get("knowledge_base_id") or "")
+        actual = self.load_manifest(knowledge_base_id)
         if not actual:
             return False
         return all(actual.get(key) == expected_manifest.get(key) for key in MANIFEST_COMPARE_KEYS)
@@ -339,8 +363,10 @@ class IndexConstructionModule:
             加载成功的 VectorStoreIndex，不匹配时返回 None
         """
         # 检查清单清单是否匹配预期清单
-        if expected_manifest is not None and self.load_manifest() is not None and not self.manifest_matches(expected_manifest):
-            return None
+        if expected_manifest is not None:
+            knowledge_base_id = str(expected_manifest.get("knowledge_base_id") or "")
+            if self.load_manifest(knowledge_base_id) is not None and not self.manifest_matches(expected_manifest):
+                return None
         if self.vector_store is None:
             self.init_collection(reset=False)
         # 基于当前向量存储和外部存储上下文创建存储上下文 StorageContext

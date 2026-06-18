@@ -36,7 +36,7 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
                 CREATE TABLE IF NOT EXISTS finrag_chunks (
                     chunk_id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
-                    knowledge_base_id TEXT,
+                    knowledge_base_id TEXT NOT NULL,
                     chunk_level INTEGER NOT NULL,
                     chunk_idx INTEGER NOT NULL,
                     payload TEXT NOT NULL,
@@ -46,6 +46,8 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
             )
             # 创建索引 idx_finrag_chunks_document，用于快速查询指定文档的所有分块
             execute(conn, "CREATE INDEX IF NOT EXISTS idx_finrag_chunks_document ON finrag_chunks(document_id)")
+            # 创建索引 idx_finrag_chunks_kb_document，用于快速查询指定知识库的所有分块
+            execute(conn, "CREATE INDEX IF NOT EXISTS idx_finrag_chunks_kb_document ON finrag_chunks(knowledge_base_id, document_id)")
             # 创建索引 idx_finrag_chunks_level，用于快速查询指定分块等级的所有分块
             execute(conn, "CREATE INDEX IF NOT EXISTS idx_finrag_chunks_level ON finrag_chunks(chunk_level)")
         
@@ -78,20 +80,48 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
         """
         获取所有节点的字典，键为节点 ID，值为节点对象
         """
-        return {node.node_id: node for node in self.load_all_nodes()}
+        return {node.node_id: node for node in self._load_nodes()}
 
 
-    def load_all_nodes(self) -> List[TextNode]:
+    def load_all_nodes(self, knowledge_base_id: str) -> List[TextNode]:
         """
-        从数据库加载所有节点
+        从数据库加载指定知识库的所有节点
+        Args:
+            knowledge_base_id: 知识库 ID
         Returns:
             所有节点的列表
         """
+        return self._load_nodes(knowledge_base_id)
+
+    def load_leaf_nodes(self, knowledge_base_id: str) -> List[TextNode]:
+        """
+        从数据库加载指定知识库的叶子节点
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            叶子节点列表
+        """
+        return [
+            node
+            for node in self.load_all_nodes(knowledge_base_id)
+            if int((node.metadata or {}).get("chunk_level", 0) or 0) == 3
+        ]
+
+    def _load_nodes(self, knowledge_base_id: Optional[str] = None) -> List[TextNode]:
+        """
+        从数据库加载节点；knowledge_base_id 为空时用于 BaseDocumentStore 的全量 docs 属性
+        """
+        where_clause = ""
+        params: tuple[str, ...] = ()
+        if knowledge_base_id is not None:
+            where_clause = "WHERE knowledge_base_id = %s"
+            params = (knowledge_base_id,)
         with self.db.connect() as conn:
             rows = execute(
                 conn,
                 # 在 finrag_chunks 表中查询所有分块内容，按文档 ID、分块等级、分块索引、分块 ID 排序
-                "SELECT payload FROM finrag_chunks ORDER BY document_id, chunk_level, chunk_idx, chunk_id",
+                f"SELECT payload FROM finrag_chunks {where_clause} ORDER BY document_id, chunk_level, chunk_idx, chunk_id",
+                params,
             ).fetchall()
         return [_deserialize_node(row[0]) for row in rows]
 
@@ -109,11 +139,23 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
             return None
         return _deserialize_node(row[0])
 
-    def delete_nodes_by_document(self, document_id: str) -> None:
+    def replace_document_nodes(self, document_id: str, nodes: List[TextNode], knowledge_base_id: str) -> None:
+        """
+        替换指定知识库中单个文档的所有节点
+        Args:
+            document_id: 文档 ID
+            nodes: 新节点列表
+            knowledge_base_id: 知识库 ID
+        """
+        self.delete_nodes_by_document(document_id, knowledge_base_id)
+        self.add_documents(nodes)
+
+    def delete_nodes_by_document(self, document_id: str, knowledge_base_id: str) -> None:
         """
         删除指定文档的所有分块、参考文档和哈希记录
         Args:
-            document_id: 文档 ID    
+            document_id: 文档 ID
+            knowledge_base_id: 知识库 ID
         """
         with self.db.connect() as conn:
             # 删除指定文档的所有哈希记录
@@ -121,25 +163,37 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
                 conn,
                 """
                 DELETE FROM finrag_llama_doc_hashes
-                WHERE chunk_id IN (SELECT chunk_id FROM finrag_chunks WHERE document_id = %s)
+                WHERE chunk_id IN (
+                    SELECT chunk_id FROM finrag_chunks
+                    WHERE knowledge_base_id = %s AND document_id = %s
+                )
                 """,
-                (document_id,),
+                (knowledge_base_id, document_id),
             )
             # 删除指定文档的所有分块记录
-            execute(conn, "DELETE FROM finrag_chunks WHERE document_id = %s", (document_id,))
+            execute(
+                conn,
+                "DELETE FROM finrag_chunks WHERE knowledge_base_id = %s AND document_id = %s",
+                (knowledge_base_id, document_id),
+            )
             # 删除指定文档的所有参考文档记录
             execute(conn, "DELETE FROM finrag_ref_docs WHERE ref_doc_id = %s", (document_id,))
 
-    def _chunk_ids_for_document(self, document_id: str) -> List[str]:
+    def _chunk_ids_for_document(self, document_id: str, knowledge_base_id: str) -> List[str]:
         """
         在 finrag_chunks 表中获取指定文档的所有分块 ID 列表
         Args:
             document_id: 文档 ID
+            knowledge_base_id: 知识库 ID
         Returns:
             所有分块 ID 列表
         """
         with self.db.connect() as conn:
-            rows = execute(conn, "SELECT chunk_id FROM finrag_chunks WHERE document_id = %s", (document_id,)).fetchall()
+            rows = execute(
+                conn,
+                "SELECT chunk_id FROM finrag_chunks WHERE knowledge_base_id = %s AND document_id = %s",
+                (knowledge_base_id, document_id),
+            ).fetchall()
         return [str(row[0]) for row in rows]
 
     # BaseDocumentStore interface
@@ -182,7 +236,7 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
                 (
                     chunk_id,
                     document_id,
-                    str(metadata.get("knowledge_base_id") or ""),
+                    str(metadata.get("knowledge_base_id") or "finance"),
                     int(metadata.get("chunk_level", 0) or 0),
                     int(metadata.get("chunk_idx", 0) or 0),
                     node.model_dump_json(),

@@ -93,7 +93,7 @@ def test_document_registry_keeps_same_filename_until_system_retires_old_document
     assert first_path.exists()
 
 
-def test_load_documents_uses_registry_and_preserves_each_knowledge_base_id(tmp_path):
+def test_load_documents_uses_registry_and_filters_current_knowledge_base_id(tmp_path):
     kb_a = tmp_path / "kb-a-policy.txt"
     kb_b = tmp_path / "kb-b-policy.txt"
     deleted = tmp_path / "deleted.txt"
@@ -126,10 +126,13 @@ def test_load_documents_uses_registry_and_preserves_each_knowledge_base_id(tmp_p
     registry.mark_indexed(rec_b.document_id, chunk_count=1)
     registry.mark_deleted(rec_deleted.document_id)
 
-    documents = load_documents(tmp_path, document_registry=registry)
+    kb_a_documents = load_documents(tmp_path, knowledge_base_id="kb-a", document_registry=registry)
+    kb_b_documents = load_documents(tmp_path, knowledge_base_id="kb-b", document_registry=registry)
 
-    assert {doc.metadata["knowledge_base_id"] for doc in documents} == {"kb-a", "kb-b"}
-    assert {doc.metadata["filename"] for doc in documents} == {"a.txt", "b.txt"}
+    assert {doc.metadata["knowledge_base_id"] for doc in kb_a_documents} == {"kb-a"}
+    assert {doc.metadata["filename"] for doc in kb_a_documents} == {"a.txt"}
+    assert {doc.metadata["knowledge_base_id"] for doc in kb_b_documents} == {"kb-b"}
+    assert {doc.metadata["filename"] for doc in kb_b_documents} == {"b.txt"}
 
 
 def test_load_documents_skips_registry_source_paths_outside_data_root(tmp_path):
@@ -146,7 +149,7 @@ def test_load_documents_skips_registry_source_paths_outside_data_root(tmp_path):
         knowledge_base_id="kb-finance",
     )
 
-    documents = load_documents(data_root, document_registry=registry)
+    documents = load_documents(data_root, knowledge_base_id="kb-finance", document_registry=registry)
 
     assert documents == []
 
@@ -166,7 +169,7 @@ def test_load_documents_accepts_registered_paths_inside_data_root(tmp_path):
     )
     registry.mark_indexed(record.document_id, chunk_count=1)
 
-    documents = load_documents(data_root, document_registry=registry)
+    documents = load_documents(data_root, knowledge_base_id="kb-finance", document_registry=registry)
 
     assert len(documents) == 1
     assert documents[0].metadata["document_id"] == record.document_id

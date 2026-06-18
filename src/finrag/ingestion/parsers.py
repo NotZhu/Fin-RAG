@@ -353,6 +353,8 @@ def load_documents(
         records = []
         for record in document_registry.records.values():
             path = Path(record.source_path)
+            if record.knowledge_base_id != knowledge_base_id:
+                continue
             # 跳过已删除或文件不存在的注册文档
             if record.status == "deleted" or not path.exists():
                 continue

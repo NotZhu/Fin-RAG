@@ -40,7 +40,10 @@ class KnowledgeBaseService:
             milvus_host=system.config.milvus_host, # Milvus 主机地址
             milvus_port=system.config.milvus_port, # Milvus 端口号
             manifest_store=system.manifest_store, # 知识库清单存储模块
-            sparse_embedding_function=BM25SparseEmbeddingFunction(system.bm25_store) if system.bm25_store is not None else None, # 可选的 BM25 稀疏嵌入函数
+            sparse_embedding_function=BM25SparseEmbeddingFunction(
+                system.bm25_store,
+                system.config.knowledge_base_id,
+            ) if system.bm25_store is not None else None, # 可选的 BM25 稀疏嵌入函数
             rrf_k=system.config.rrf_k, # RRF 算法参数
         )
         # 如果启用了语义分块，配置嵌入模型
@@ -64,10 +67,12 @@ class KnowledgeBaseService:
             assert system.data_module is not None
             assert system.index_module is not None
             Path(system.config.data_path).mkdir(parents=True, exist_ok=True)
+            # 配置知识库作用域
+            knowledge_base_id = system._configure_knowledge_base_scope_locked(system.config.knowledge_base_id)
             # 构建预期清单
-            expected_manifest = system._build_expected_manifest()
+            expected_manifest = system._build_expected_manifest(knowledge_base_id)
             # 从数据 store 加载所有叶子节点
-            leaf_nodes: List[TextNode] = system._load_leaf_nodes_from_docstore()
+            leaf_nodes: List[TextNode] = system._load_leaf_nodes_from_docstore(knowledge_base_id)
             # 如果有叶子节点且清单匹配，尝试加载索引
             if leaf_nodes and system.index_module.manifest_matches(expected_manifest):
                 # 向量检索索引对象
@@ -78,7 +83,7 @@ class KnowledgeBaseService:
                     # 刷新检索索引
                     system._refresh_retrieval(vector_index, leaf_nodes)
                     return
-            system._full_rebuild_locked()
+            system._full_rebuild_locked(knowledge_base_id)
 
     def ensure_knowledge_base_ready(self) -> None:
         """确保知识库已初始化并可用，不可用时先检查 Milvus 连通性再构建"""
@@ -132,8 +137,9 @@ class KnowledgeBaseService:
         system = self.system
         with system._write_lock:
             system._ensure_modules()
-            system._full_rebuild_locked(sync_source_registry=True)
-            manifest = system.index_module.load_manifest() if system.index_module is not None else {}
+            knowledge_base_id = system._configure_knowledge_base_scope_locked(system.config.knowledge_base_id)
+            system._full_rebuild_locked(knowledge_base_id, sync_source_registry=True)
+            manifest = system.index_module.load_manifest(knowledge_base_id) if system.index_module is not None else {}
             schema_version = int((manifest or {}).get("schema_version", 0) or 0)
             document_count = len(system.data_module.documents) if system.data_module is not None else 0
             chunk_count = len(system.data_module.chunks) if system.data_module is not None else 0
