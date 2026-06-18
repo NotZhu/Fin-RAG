@@ -1,4 +1,5 @@
 from pathlib import Path
+from inspect import Parameter, signature
 from types import SimpleNamespace
 
 import pytest
@@ -6,10 +7,25 @@ import pytest
 import finrag.application.knowledge_base as knowledge_base_module
 from finrag.application.document_lifecycle import DocumentLifecycleService
 from finrag.application.knowledge_base import KnowledgeBaseService
+from finrag.application.knowledge_base_scope import KnowledgeBaseScope
 from finrag.application.qa_pipeline import QAPipelineService
 from finrag.application.source_files import ManagedSourceFileService
 from finrag.application.system import FinRAGSystem
 from finrag.core.config import RAGConfig
+
+
+def test_document_lifecycle_entrypoints_require_knowledge_base_id():
+    required_parameters = [
+        signature(FinRAGSystem.list_documents).parameters["knowledge_base_id"],
+        signature(FinRAGSystem.delete_document).parameters["knowledge_base_id"],
+        signature(FinRAGSystem.reindex_document).parameters["knowledge_base_id"],
+        signature(FinRAGSystem.knowledge_base_scope).parameters["knowledge_base_id"],
+        signature(DocumentLifecycleService.delete_document).parameters["knowledge_base_id"],
+        signature(DocumentLifecycleService.reindex_document).parameters["knowledge_base_id"],
+        signature(KnowledgeBaseScope.from_config).parameters["knowledge_base_id"],
+    ]
+
+    assert all(parameter.default is Parameter.empty for parameter in required_parameters)
 
 
 def test_managed_source_file_service_owns_safe_paths(tmp_path):
@@ -19,7 +35,8 @@ def test_managed_source_file_service_owns_safe_paths(tmp_path):
     record = SimpleNamespace(document_id="doc-1", filename="../unsafe/policy.md", knowledge_base_id="kb-finance")
 
     assert service.safe_source_filename("../unsafe/policy", ".md") == "policy.md"
-    assert service.pending_source_path(record) == Path(config.data_path) / ".pending" / "doc-1" / "policy.md"
+    assert service.pending_source_path(record) == Path(config.data_path) / ".pending" / "kb-finance" / "doc-1" / "policy.md"
+    assert service.final_source_path(record) == Path(config.data_path) / "kb-finance" / "policy.md"
 
 
 def test_finrag_system_delegates_ask_question_to_pipeline(tmp_path):
@@ -36,7 +53,7 @@ def test_finrag_system_delegates_ask_question_to_pipeline(tmp_path):
     fake_pipeline = FakePipeline()
     system.qa_pipeline = fake_pipeline
 
-    result = system.ask_question("客户风险等级如何匹配？", return_trace=True)
+    result = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="finance", return_trace=True)
 
     assert result == "response"
     assert fake_pipeline.calls == [
@@ -45,7 +62,7 @@ def test_finrag_system_delegates_ask_question_to_pipeline(tmp_path):
             {
                 "return_sources": False,
                 "return_trace": True,
-                "knowledge_base_id": None,
+                "knowledge_base_id": "finance",
                 "event_sink": None,
                 "cancel_event": None,
             },
@@ -110,15 +127,15 @@ def test_finrag_system_delegates_document_lifecycle_entrypoints(tmp_path):
     assert system.prepare_uploaded_file(upload_path, "policy.md", "kb-finance") == {"status": "prepared"}
     assert system.ingest_uploaded_file(upload_path, "policy.md", "kb-finance") == {"status": "ingested"}
     assert system.index_registered_document("doc-1") == {"status": "indexed"}
-    assert system.delete_document("doc-1") == {"status": "deleted"}
-    assert system.reindex_document("doc-1") == {"status": "reindexed"}
+    assert system.delete_document("doc-1", "kb-finance") == {"status": "deleted"}
+    assert system.reindex_document("doc-1", "kb-finance") == {"status": "reindexed"}
 
     assert fake_documents.calls == [
         ("prepare_uploaded_file", (upload_path, "policy.md", "kb-finance"), {}),
         ("ingest_uploaded_file", (upload_path, "policy.md", "kb-finance"), {}),
         ("index_registered_document", ("doc-1",), {}),
-        ("delete_document", ("doc-1",), {}),
-        ("reindex_document", ("doc-1",), {}),
+        ("delete_document", ("doc-1", "kb-finance"), {}),
+        ("reindex_document", ("doc-1", "kb-finance"), {}),
     ]
     assert isinstance(system._default_document_lifecycle(), DocumentLifecycleService)
 

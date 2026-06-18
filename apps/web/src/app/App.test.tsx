@@ -21,7 +21,7 @@ const documentsPayload = {
       document_id: "doc-1",
       filename: "适当性管理办法.md",
       file_type: "md",
-      knowledge_base_id: "kb-finance",
+      knowledge_base_id: "finance",
       status: "indexed",
       chunk_count: 3,
       upload_time: "2026-06-14T13:35:37.897082+00:00",
@@ -47,7 +47,7 @@ const answerPayload = {
   trace: {
     retrieval_strategy: "llamaindex_router",
     route_type: "knowledge",
-    filters: { knowledge_base_id: "kb-finance" },
+    filters: { knowledge_base_id: "finance" },
     timings_ms: {
       analysis: 1,
       retrieval: 3,
@@ -266,7 +266,7 @@ describe("FinRAG chat interface", () => {
     const dialog = await screen.findByRole("dialog", { name: "确认索引文档" });
     expect(within(dialog).getByLabelText("policy.md")).toBeInTheDocument();
     expect(within(dialog).getByRole("textbox", { name: "知识库" })).toHaveValue(
-      "kb-finance",
+      "finance",
     );
     expect(within(dialog).getByRole("button", { name: "索引" })).toHaveClass(
       "modal-action-button",
@@ -288,18 +288,18 @@ describe("FinRAG chat interface", () => {
     });
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/documents/upload",
+        "/knowledge-bases/kb-credit/documents/upload",
         expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
       );
     });
     const uploadCall = fetchMock.mock.calls.find(
-      ([url]) => url === "/documents/upload",
+      ([url]) => url === "/knowledge-bases/kb-credit/documents/upload",
     );
     expect(
       ((uploadCall?.[1] as RequestInit).body as FormData).get(
         "knowledge_base_id",
       ),
-    ).toBe("kb-credit");
+    ).toBeNull();
     uploadRequest.resolve(
       new Response(JSON.stringify({ status: "indexed" }), {
         headers: { "Content-Type": "application/json" },
@@ -487,7 +487,7 @@ describe("FinRAG chat interface", () => {
           document_id: "doc-2",
           filename: "report.pdf",
           file_type: "pdf",
-          knowledge_base_id: "kb-finance",
+          knowledge_base_id: "finance",
           status: "parsing",
           chunk_count: 0,
           upload_time: "2026-06-14T13:35:37.897082+00:00",
@@ -502,7 +502,7 @@ describe("FinRAG chat interface", () => {
           document_id: "doc-2",
           filename: "report.pdf",
           file_type: "pdf",
-          knowledge_base_id: "kb-finance",
+          knowledge_base_id: "finance",
           status: "indexed",
           chunk_count: 5,
           upload_time: "2026-06-14T13:35:37.897082+00:00",
@@ -551,7 +551,7 @@ describe("FinRAG chat interface", () => {
           document_id: "doc-3",
           filename: "corrupt.pdf",
           file_type: "pdf",
-          knowledge_base_id: "kb-finance",
+          knowledge_base_id: "finance",
           status: "failed",
           chunk_count: 0,
           upload_time: "2026-06-15T10:00:00.000000+00:00",

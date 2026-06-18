@@ -29,9 +29,9 @@ def test_prepare_uploaded_file_stores_pending_source_with_original_filename(tmp_
     record = system.document_registry.get(prepared["document_id"])
 
     assert record.filename == "policy.md"
-    assert Path(record.source_path) == Path(system.config.data_path) / ".pending" / record.document_id / "policy.md"
+    assert Path(record.source_path) == Path(system.config.data_path) / ".pending" / "kb-finance" / record.document_id / "policy.md"
     assert Path(record.source_path).read_text(encoding="utf-8") == "# 制度\n客户尽调"
-    assert not (Path(system.config.data_path) / "kb-finance" / f"{record.document_id}.md").exists()
+    assert not (Path(system.config.data_path) / f"{record.document_id}.md").exists()
 
 
 def test_prepare_uploaded_file_updates_source_path_without_full_registry_save(tmp_path):
@@ -57,7 +57,7 @@ def test_prepare_uploaded_file_updates_source_path_without_full_registry_save(tm
 
     record = registry.get(prepared["document_id"])
     assert registry.updated_source_paths == [(record.document_id, record.source_path)]
-    assert Path(record.source_path) == Path(system.config.data_path) / ".pending" / record.document_id / "policy.md"
+    assert Path(record.source_path) == Path(system.config.data_path) / ".pending" / "kb-finance" / record.document_id / "policy.md"
 
 
 def test_promote_document_source_file_updates_source_path_without_full_registry_save(tmp_path):
@@ -89,7 +89,7 @@ def test_promote_document_source_file_updates_source_path_without_full_registry_
 
     system._managed_source_files().promote_document_source_file(record)
 
-    assert registry.updated_source_paths == [(record.document_id, str(Path(system.config.data_path) / "policy.md"))]
+    assert registry.updated_source_paths == [(record.document_id, str(Path(system.config.data_path) / "kb-finance" / "policy.md"))]
     assert Path(record.source_path).read_text(encoding="utf-8") == "# 制度\n客户尽调"
 
 
@@ -111,6 +111,6 @@ def test_index_registered_document_promotes_pending_source_to_original_filename(
     record = system.document_registry.get(document_id)
 
     assert indexed["status"] == "indexed"
-    assert Path(record.source_path) == Path(system.config.data_path) / "policy.md"
+    assert Path(record.source_path) == Path(system.config.data_path) / "kb-finance" / "policy.md"
     assert Path(record.source_path).read_text(encoding="utf-8") == "# 制度\n客户尽调"
     assert not pending_path.exists()

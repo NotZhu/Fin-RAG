@@ -43,7 +43,13 @@ class ManagedSourceFileService:
 
     def pending_source_path(self, record: Any) -> Path:
         """返回待处理源文件路径"""
-        return Path(self.config.data_path) / ".pending" / record.document_id / self.safe_source_filename(record.filename)
+        return (
+            Path(self.config.data_path)
+            / ".pending"
+            / str(record.knowledge_base_id)
+            / record.document_id
+            / self.safe_source_filename(record.filename)
+        )
 
     def final_source_path(self, record: Any) -> Path:
         """
@@ -54,15 +60,7 @@ class ManagedSourceFileService:
             文档源文件的最终托管路径
         """
         filename = self.safe_source_filename(record.filename)
-        final_path = Path(self.config.data_path) / filename
-        # 检查是否有其他文档使用相同的文件名
-        for other in self.document_registry.records.values():
-            if other.document_id == record.document_id or other.status == "deleted":
-                continue
-            # 检查其他文档的源文件路径是否与当前文档的最终托管路径相同
-            if Path(other.source_path).resolve() == final_path.resolve():
-                return Path(self.config.data_path) / record.knowledge_base_id / filename
-        return final_path
+        return Path(self.config.data_path) / str(record.knowledge_base_id) / filename
 
     def promote_document_source_file(self, record: Any) -> None:
         """

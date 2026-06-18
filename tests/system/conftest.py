@@ -6,6 +6,7 @@ from tests.support.fakes import (
     MemoryBM25StateStore,
     MemoryDocumentRegistry,
     MemoryIndexManifestStore,
+    MemoryKnowledgeBaseRegistry,
     MemoryNodeStore,
 )
 
@@ -65,8 +66,13 @@ def fake_postgres_redis_stack(monkeypatch):
         def __init__(self, database_url):
             super().__init__(database_url)
 
+    class TestKnowledgeBaseRegistry(MemoryKnowledgeBaseRegistry):
+        def __init__(self, database_url):
+            super().__init__(database_url)
+
     for target in (stores_module, system_module):
         monkeypatch.setattr(target, "PostgreSQLDocumentRegistry", TestDocumentRegistry, raising=False)
         monkeypatch.setattr(target, "PostgreSQLLlamaIndexDocumentStore", TestLlamaIndexDocumentStore, raising=False)
         monkeypatch.setattr(target, "PostgreSQLBM25StateStore", TestBM25StateStore, raising=False)
         monkeypatch.setattr(target, "PostgreSQLIndexManifestStore", TestIndexManifestStore, raising=False)
+        monkeypatch.setattr(target, "PostgreSQLKnowledgeBaseRegistry", TestKnowledgeBaseRegistry, raising=False)

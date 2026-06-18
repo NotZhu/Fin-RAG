@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 from finrag.core import FinRAGResponse, RAGTrace, RetrievedSource
 
@@ -40,7 +41,7 @@ class FakeFinRAGSystem:
     def ready(self):
         return {"ready": True, "status": "ready", "total_documents": 2, "total_chunks": 5, "last_error": None}
 
-    def list_documents(self):
+    def list_documents(self, knowledge_base_id: str):
         return []
 
     def ask_question(self, question, **kwargs):
@@ -237,9 +238,15 @@ def test_api_components_are_available_from_focused_modules():
     from finrag.api.rag_service import RAGService
 
     assert RAGService is ExportedRAGService
-    request = AskRequest(question="  hello  ")
+    request = AskRequest(question="  hello  ", knowledge_base_id="finance")
     assert request.question == "hello"
-    assert request.knowledge_base_id is None
+    assert request.knowledge_base_id == "finance"
+    request_with_kb = AskRequest(question="hello", knowledge_base_id=" kb-finance ")
+    assert request_with_kb.knowledge_base_id == "kb-finance"
+    with pytest.raises(ValueError, match="Field required"):
+        AskRequest(question="hello")
+    with pytest.raises(ValueError, match="knowledge_base_id"):
+        AskRequest(question="hello", knowledge_base_id="../outside")
     assert not hasattr(request, "retrieval_strategy")
 
 
@@ -249,7 +256,12 @@ def test_ask_initializes_knowledge_base_before_question():
     with client.stream(
         "POST",
         "/ask",
-        json={"question": "客户风险等级如何匹配？", "return_sources": True, "return_trace": True},
+        json={
+            "question": "客户风险等级如何匹配？",
+            "knowledge_base_id": "finance",
+            "return_sources": True,
+            "return_trace": True,
+        },
     ) as response:
         body = "".join(response.iter_text())
 
@@ -289,18 +301,25 @@ def test_ask_returns_sse_events_sources_and_trace():
     assert "retrieval_strategy" not in systems[0].ask_calls[0]
 
 
-def test_ask_omitted_knowledge_base_id_is_left_for_system_config_default():
+def test_ask_rejects_omitted_knowledge_base_id_before_system_creation():
     client, systems = build_client()
 
-    with client.stream(
-        "POST",
-        "/ask",
-        json={"question": "客户风险等级如何匹配？"},
-    ) as response:
-        "".join(response.iter_text())
+    response = client.post("/ask", json={"question": "客户风险等级如何匹配？"})
 
-    assert response.status_code == 200
-    assert systems[0].ask_calls[0]["knowledge_base_id"] is None
+    assert response.status_code == 422
+    assert systems == []
+
+
+def test_ask_rejects_invalid_knowledge_base_id_before_system_creation():
+    client, systems = build_client()
+
+    response = client.post(
+        "/ask",
+        json={"question": "客户风险等级如何匹配？", "knowledge_base_id": "../outside"},
+    )
+
+    assert response.status_code == 422
+    assert systems == []
 
 
 def test_ask_stream_respects_return_sources_and_trace_flags():
@@ -397,7 +416,10 @@ def test_service_stream_sets_cancel_event_when_client_stops_reading():
     service = RAGService(factory)
 
     async def read_one_chunk_and_close():
-        stream = service.ask_stream(AskRequest(question="客户风险等级如何匹配？"), is_disconnected=lambda: asyncio.sleep(0, result=False))
+        stream = service.ask_stream(
+            AskRequest(question="客户风险等级如何匹配？", knowledge_base_id="finance"),
+            is_disconnected=lambda: asyncio.sleep(0, result=False),
+        )
         first = await stream.__anext__()
         await stream.aclose()
         return first

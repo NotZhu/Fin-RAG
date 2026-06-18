@@ -15,6 +15,7 @@ from finrag.core.node_schema import TextNode
 from finrag.generation import GenerationIntegrationModule
 from finrag.application.document_lifecycle import DocumentLifecycleService
 from finrag.application.knowledge_base import KnowledgeBaseService
+from finrag.application.knowledge_base_scope import KnowledgeBaseScope
 from finrag.application.llamaindex_engines import build_knowledge_engines, build_top_router
 from finrag.application.qa_pipeline import QAPipelineService
 from finrag.application.source_files import ManagedSourceFileService
@@ -25,6 +26,7 @@ from finrag.indexing import (
 from finrag.storage import (
     PostgreSQLBM25StateStore,
     PostgreSQLIndexManifestStore,
+    PostgreSQLKnowledgeBaseRegistry,
     PostgreSQLLlamaIndexDocumentStore,
 )
 from finrag.ingestion import DocumentRecord, PostgreSQLDocumentRegistry, compute_content_hash
@@ -93,6 +95,10 @@ class FinRAGSystem:
         self.bm25_store = PostgreSQLBM25StateStore(self.config.database_url)
         # 索引清单存储
         self.manifest_store = PostgreSQLIndexManifestStore(self.config.database_url)
+        # 知识库注册表
+        self.knowledge_base_registry = PostgreSQLKnowledgeBaseRegistry(self.config.database_url)
+        # 确保默认知识库存在
+        self.knowledge_base_registry.ensure_default(self.config.knowledge_base_id)
         # 源文件管理服务
         self.source_files = ManagedSourceFileService(self.config, self.document_registry)
         
@@ -185,13 +191,72 @@ class FinRAGSystem:
         payload.setdefault("avg_chunk_size", 0)
         return payload
 
-    def list_documents(self) -> List[dict]:
+    def list_documents(self, knowledge_base_id: str) -> List[dict]:
         """
         列出文档注册表中的公开文档记录
+        Args:
+            knowledge_base_id: 知识库 ID
         Returns:
             文档状态字典列表
         """
-        return self.document_registry.list_public()
+        scope = self.knowledge_base_scope(knowledge_base_id)
+        return self.document_registry.list_public(scope.knowledge_base_id)
+
+    def knowledge_base_scope(self, knowledge_base_id: str) -> KnowledgeBaseScope:
+        """
+        获取指定知识库的作用域信息
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            当前知识库的路径、collection 和缓存 key 信息
+        """
+        return KnowledgeBaseScope.from_config(self.config, knowledge_base_id)
+
+    def list_knowledge_bases(self) -> List[dict]:
+        """
+        列出所有知识库
+        Returns:
+            包含文档数量的知识库公开记录
+        """
+        # 确保知识库注册表与文档注册表同步
+        self._sync_knowledge_bases_from_documents()
+        # 统计每个知识库的文档数量
+        document_counts = Counter(
+            str(getattr(record, "knowledge_base_id", "") or "")
+            for record in self.document_registry.records.values()
+            if getattr(record, "status", "") != "deleted"
+        )
+        return [
+            record.to_dict(document_count=document_counts.get(record.knowledge_base_id, 0))
+            for record in self.knowledge_base_registry.list()
+        ]
+
+    def create_knowledge_base(self, knowledge_base_id: str) -> dict:
+        """
+        创建用户指定 ID 的知识库，并准备其源文件目录
+        Args:
+            knowledge_base_id: 用户输入的知识库 ID，也作为知识库名
+        Returns:
+            新知识库公开记录
+        """
+        record = self.knowledge_base_registry.create(knowledge_base_id)
+        # 确保知识库源文件目录存在
+        self.knowledge_base_scope(record.knowledge_base_id).source_root.mkdir(parents=True, exist_ok=True)
+        return record.to_dict(document_count=0)
+
+    def _sync_knowledge_bases_from_documents(self) -> None:
+        """
+        将既有文档注册表中的知识库补入知识库注册表
+        """
+        for record in self.document_registry.records.values():
+            if getattr(record, "status", "") == "deleted":
+                continue
+            knowledge_base_id = str(getattr(record, "knowledge_base_id", "") or "").strip()
+            if not knowledge_base_id:
+                continue
+            # 如果知识库不存在，确保/创建知识库
+            if self.knowledge_base_registry.get_optional(knowledge_base_id) is None:
+                self.knowledge_base_registry.ensure_default(knowledge_base_id)
 
     def _default_qa_pipeline(self) -> QAPipelineService:
         """
@@ -270,32 +335,40 @@ class FinRAGSystem:
         """
         return self.document_lifecycle.ingest_uploaded_file(file_path, filename, knowledge_base_id)
 
-    def delete_document(self, document_id: str) -> dict:
+    def delete_document(self, document_id: str, knowledge_base_id: str) -> dict:
         """
         删除托管文档源文件，并按 document_id 增量删除索引
         Args:
             document_id: 待删除文档 ID
+            knowledge_base_id: 知识库 ID
         Returns:
             删除后的文档公开状态
         """
-        return self.document_lifecycle.delete_document(document_id)
+        return self.document_lifecycle.delete_document(
+            document_id,
+            self.knowledge_base_scope(knowledge_base_id).knowledge_base_id,
+        )
 
-    def reindex_document(self, document_id: str) -> dict:
+    def reindex_document(self, document_id: str, knowledge_base_id: str) -> dict:
         """
         对指定文档重新执行解析和索引构建
         Args:
             document_id: 待重建索引的文档 ID
+            knowledge_base_id: 知识库 ID
         Returns:
             重建后的文档公开状态
         """
-        return self.document_lifecycle.reindex_document(document_id)
+        return self.document_lifecycle.reindex_document(
+            document_id,
+            self.knowledge_base_scope(knowledge_base_id).knowledge_base_id,
+        )
 
     def ask_question(
         self,
         question: str,
+        knowledge_base_id: str,
         return_sources: bool = False,
         return_trace: bool = False,
-        knowledge_base_id: Optional[str] = None,
         event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event: Any = None,
     ):
@@ -305,17 +378,18 @@ class FinRAGSystem:
             question: 用户问题
             return_sources: 是否返回来源证据
             return_trace: 是否返回调试 trace
-            knowledge_base_id: 可选资料库过滤条件
+            knowledge_base_id: 资料库过滤条件
             event_sink: 可选 SSE 事件回调
             cancel_event: 可选取消信号
         Returns:
             FinRAGResponse 问答响应对象
         """
+        scope = self.knowledge_base_scope(knowledge_base_id)
         return self.qa_pipeline.ask_question(
             question,
             return_sources=return_sources,
             return_trace=return_trace,
-            knowledge_base_id=knowledge_base_id,
+            knowledge_base_id=scope.knowledge_base_id,
             event_sink=event_sink,
             cancel_event=cancel_event,
         )
@@ -790,7 +864,7 @@ class FinRAGSystem:
                 if not question:
                     print("请输入问题内容，或输入'退出'结束")
                     continue
-                response = self.ask_question(question, return_sources=True)
+                response = self.ask_question(question, return_sources=True, knowledge_base_id=self.config.knowledge_base_id)
                 print(response.answer)
             except (KeyboardInterrupt, EOFError):
                 break

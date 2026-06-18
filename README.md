@@ -46,7 +46,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
                                     │
                     ┌───────────────▼──────────────┐
                     │ FastAPI                      │
-                    │ ready / documents / ask      │
+                    │ ready / knowledge-bases / ask│
                     └───────────────┬──────────────┘
                                     │
                     ┌───────────────▼──────────────┐
@@ -78,7 +78,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 ## RAG Pipeline
 
 1. **Document Lifecycle**
-   `/documents/upload` 对上传文件执行扩展名校验、大小校验和安全文件名提取；`DocumentLifecycleService` 将文件写入受管理源文件目录，计算 `content_hash`，维护 `uploaded`、`parsing`、`indexed`、`failed`、`deleted` 状态，并支持同步索引、后台索引、删除和重建索引。
+   `/knowledge-bases/{knowledge_base_id}/documents/upload` 对上传文件执行扩展名校验、大小校验和安全文件名提取；`DocumentLifecycleService` 将文件写入受管理源文件目录，计算 `content_hash`，维护 `uploaded`、`parsing`、`indexed`、`failed`、`deleted` 状态，并支持同步索引、后台索引、删除和重建索引。
 2. **Parsing & Metadata**
    解析层支持 PDF、Markdown、TXT、DOCX，生成 LlamaIndex `Document` 并写入可检索元数据：`knowledge_base_id`、`document_id`、`filename`、`file_type`、`page_number`。`source_path`、`content_hash` 等内部字段保存在注册表和托管文件服务中，API 响应暴露适合工作台展示的公共字段。
 3. **Hierarchical Chunking**
@@ -159,7 +159,7 @@ RAG_CHUNK_OVERLAP=60
 DASHSCOPE_API_KEY=your_api_key
 RAG_EMBEDDING_MODEL=text-embedding-v4
 RAG_DATA_PATH=data/documents
-RAG_KNOWLEDGE_BASE_ID=kb-finance
+RAG_KNOWLEDGE_BASE_ID=finance
 ```
 
 索引初始化需要 `DASHSCOPE_API_KEY`。需要二阶段精排时配置 Jina-compatible HTTP rerank：
@@ -192,10 +192,12 @@ npm run build
 | `GET`    | `/health`                          | 返回 `{"status":"ok"}`，用于服务存活检查                                                      |
 | `GET`    | `/ready`                           | 返回资料库就绪状态、文档数、分块数和错误信息                                                    |
 | `POST`   | `/warmup`                          | 主动初始化 RAG 系统并返回 ready 状态                                                            |
-| `GET`    | `/documents`                       | 返回公开文档列表和索引状态                                                                      |
-| `POST`   | `/documents/upload`                | multipart 上传 PDF / Markdown / TXT / DOCX，表单字段支持 `knowledge_base_id`、`async_index` |
-| `DELETE` | `/documents/{document_id}`         | 删除文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点                                    |
-| `POST`   | `/documents/{document_id}/reindex` | 对指定文档重新解析并写入索引                                                                    |
+| `GET`    | `/knowledge-bases`                                                        | 返回知识库列表                                                                                  |
+| `POST`   | `/knowledge-bases`                                                        | 创建知识库，请求体为 `{"knowledge_base_id":"finance"}`                                        |
+| `GET`    | `/knowledge-bases/{knowledge_base_id}/documents`                          | 返回指定知识库的公开文档列表和索引状态                                                          |
+| `POST`   | `/knowledge-bases/{knowledge_base_id}/documents/upload`                   | multipart 上传 PDF / Markdown / TXT / DOCX，表单字段支持 `async_index`                        |
+| `DELETE` | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}`            | 删除指定知识库中的文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点                      |
+| `POST`   | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}/reindex`    | 对指定知识库中的文档重新解析并写入索引                                                          |
 | `POST`   | `/ask`                             | 发起 `text/event-stream` 流式资料库问答                                                       |
 
 ### Ask Request
@@ -203,7 +205,7 @@ npm run build
 ```json
 {
   "question": "客户风险等级如何与产品风险等级匹配？",
-  "knowledge_base_id": "kb-finance",
+  "knowledge_base_id": "finance",
   "return_sources": true,
   "return_trace": true
 }
@@ -294,7 +296,7 @@ data: {"response":{...},"final_decision":"generate"}
 | Endpoint             | Fields                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/ready`           | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                                          |
-| `/documents`       | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                                     |
+| `/knowledge-bases/{knowledge_base_id}/documents` | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                                     |
 | `/ask` SSE         | `analysis`、`pipeline_step`、`route`、`source`、`token`、`done`、`error`                                                                                                                                                |
 | `done.response`    | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace`                                                                                                                                              |
 | `sources[]`        | `source_id`、`filename`、`page_number`、`score`、`snippet`                                                                                                                                                                  |
@@ -346,7 +348,7 @@ npm run build
 | ---------------------------------- | -------------------------------------- | ------------------------------------------ |
 | `RAG_DATA_PATH`                  | `data/documents`                     | 默认资料库目录                             |
 | `RAG_UPLOAD_DIR`                 | `storage/uploads`                    | 上传文件临时保存目录                       |
-| `RAG_KNOWLEDGE_BASE_ID`          | `kb-finance`                         | 默认资料库 ID                              |
+| `RAG_KNOWLEDGE_BASE_ID`          | `finance`                            | 默认资料库 ID                              |
 | `RAG_DATABASE_URL`               | `postgresql://.../finrag`            | PostgreSQL 连接串                          |
 | `RAG_REDIS_URL`                  | `redis://localhost:6379/0`           | Redis 缓存连接串                           |
 | `RAG_MILVUS_HOST`                | `localhost`                          | Milvus 服务地址                            |

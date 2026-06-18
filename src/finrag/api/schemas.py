@@ -11,7 +11,7 @@ class AskRequest(BaseModel):
     """问答接口请求体模型"""
 
     question: str = Field(..., min_length=1) # 用户问题文本
-    knowledge_base_id: str | None = None # 可选资料库 ID，为空时使用系统默认值
+    knowledge_base_id: str = Field(..., min_length=1) # 资料库 ID
     return_sources: bool = True # 是否返回来源证据
     return_trace: bool = False # 是否返回调试 trace
 
@@ -32,7 +32,7 @@ class AskRequest(BaseModel):
 
     @field_validator("knowledge_base_id")
     @classmethod
-    def knowledge_base_id_must_be_safe(cls, value: str | None) -> str | None:
+    def knowledge_base_id_must_be_safe(cls, value: str) -> str:
         """
         校验资料库 ID 只包含安全字符，避免路径或过滤条件异常
         Args:
@@ -40,6 +40,23 @@ class AskRequest(BaseModel):
         Returns:
             通过校验的资料库 ID
         """
-        if value in (None, ""):
-            return None
+        return validate_knowledge_base_id(value)
+
+
+class CreateKnowledgeBaseRequest(BaseModel):
+    """创建知识库请求体模型"""
+
+    # 知识库 ID
+    knowledge_base_id: str = Field(..., min_length=1)
+
+    @field_validator("knowledge_base_id") # 校验知识库 ID 是否为空，只包含安全字符
+    @classmethod
+    def knowledge_base_id_must_be_safe(cls, value: str) -> str:
+        """
+        校验知识库 ID 只包含安全字符，避免路径或过滤条件异常
+        Args:
+            value: 请求中的 knowledge_base_id 字段
+        Returns:
+            通过校验的知识库 ID
+        """
         return validate_knowledge_base_id(value)

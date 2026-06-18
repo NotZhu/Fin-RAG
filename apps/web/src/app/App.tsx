@@ -101,7 +101,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<"qa" | "docs">("qa");
   const [question, setQuestion] = useState("");
   const [submittedQuestion, setSubmittedQuestion] = useState("");
-  const [knowledgeBaseId, setKnowledgeBaseId] = useState("kb-finance");
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState("finance");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [answerBusy, setAnswerBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -130,7 +130,7 @@ function App() {
     setReindexingDocId(documentId);
     setError("");
     try {
-      await reindexDocumentApi(documentId);
+      await reindexDocumentApi(documentId, knowledgeBaseId);
       await refreshDocuments();
     } catch (caught) {
       setError(errorMessage(caught, "重新索引失败"));
@@ -144,7 +144,7 @@ function App() {
     setUploadBusy(true);
     setError("");
     try {
-      await deleteDocumentApi(documentId);
+      await deleteDocumentApi(documentId, knowledgeBaseId);
       await refreshDocuments();
     } catch (caught) {
       setError(errorMessage(caught, "删除文档失败"));
@@ -154,7 +154,7 @@ function App() {
   }
 
   async function refreshDocuments() {
-    const payload = await listDocuments();
+    const payload = await listDocuments(knowledgeBaseId);
     setDocuments(payload.documents.filter((doc) => doc.status !== "deleted"));
   }
 

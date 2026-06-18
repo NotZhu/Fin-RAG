@@ -107,5 +107,5 @@ def test_retrieval_eval_search_fn_uses_runtime_finrag_system(monkeypatch, tmp_pa
     assert calls == [
         ("init", str(tmp_path.resolve())),
         ("ready",),
-        ("retrieve", "客户风险等级如何匹配？", 2, {"knowledge_base_id": "kb-finance"}),
+        ("retrieve", "客户风险等级如何匹配？", 2, {"knowledge_base_id": "finance"}),
     ]

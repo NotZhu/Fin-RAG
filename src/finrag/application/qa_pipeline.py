@@ -22,9 +22,9 @@ class QAPipelineService:
     def ask_question(
         self,
         question: str,
+        knowledge_base_id: str,
         return_sources: bool = False,
         return_trace: bool = False,
-        knowledge_base_id: Optional[str] = None,
         event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event: Any = None,
     ):
@@ -116,7 +116,7 @@ class QAPipelineService:
                 question=question,
                 strategy=strategy,
                 route_type="knowledge",
-                filters={"knowledge_base_id": knowledge_base_id or system.config.knowledge_base_id},
+                filters={"knowledge_base_id": knowledge_base_id},
                 error=RuntimeError("router_engine 未初始化"),
                 events=events,
                 timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
@@ -147,7 +147,7 @@ class QAPipelineService:
         total_start: float,
         return_sources: bool,
         return_trace: bool,
-        knowledge_base_id: Optional[str],
+        knowledge_base_id: str,
         events: List[Dict[str, Any]],
         pipeline_steps: List[Dict[str, Any]],
         emit: Callable[..., None],
@@ -198,7 +198,7 @@ class QAPipelineService:
                 )
                 return self._knowledge_unavailable(
                     question=question, strategy=strategy, route_type="knowledge",
-                    filters={"knowledge_base_id": knowledge_base_id or system.config.knowledge_base_id},
+                    filters={"knowledge_base_id": knowledge_base_id},
                     error=exc, events=events,
                     timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
                     pipeline_steps=pipeline_steps,

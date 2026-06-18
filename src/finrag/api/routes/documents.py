@@ -41,30 +41,54 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
     # 上传目录重写
     upload_root_override = Path(upload_dir) if upload_dir is not None else None
 
-    @app.get("/documents")
-    def list_documents() -> dict:
+    def _resolve_knowledge_base_id(value: str) -> str:
         """
-        返回当前资料库的公开文档列表
+        从请求参数中解析知识库 ID，确保其安全且存在
+        Args:
+            value: 请求中的 knowledge_base_id 字段
+        Returns:
+            通过校验的知识库 ID
+        """
+        return validate_knowledge_base_id(value)
+
+    @app.get("/knowledge-bases/{knowledge_base_id}/documents")
+    def list_knowledge_base_documents(knowledge_base_id: str, request: Request):
+        """
+        返回指定知识库的公开文档列表
+        Args:
+            knowledge_base_id: 知识库 ID
+            request: 当前 HTTP 请求
         Returns:
             包含 documents 列表的响应字典
         """
-        return {"documents": service.get_system().list_documents()}
+        request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
+        system = service.get_system()
+        try:
+            resolved_knowledge_base_id = _resolve_knowledge_base_id(knowledge_base_id)
+        except ValueError as exc:
+            return _build_error_response(
+                code="invalid_knowledge_base_id",
+                message=str(exc),
+                request_id=request_id,
+                status_code=400,
+            )
+        return {"documents": system.list_documents(resolved_knowledge_base_id)}
 
-    @app.post("/documents/upload")
-    async def upload_document(
+    @app.post("/knowledge-bases/{knowledge_base_id}/documents/upload")
+    async def upload_knowledge_base_document(
+        knowledge_base_id: str,
         request: Request,
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
-        knowledge_base_id: str | None = Form(None),
         async_index: bool = Form(False),
     ) -> dict:
         """
-        接收上传文档并执行同步或异步索引
+        接收上传文档并写入指定知识库
         Args:
+            knowledge_base_id: 知识库 ID
             request: 当前 HTTP 请求
             background_tasks: FastAPI 后台任务队列
             file: 上传的文档文件
-            knowledge_base_id: 目标资料库 ID
             async_index: 是否异步执行索引构建
         Returns:
             文档注册或索引结果；失败时返回统一错误响应
@@ -74,8 +98,6 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
         system = service.get_system()
         # 获取当前配置
         config = getattr(system, "config", None) or _DEFAULT_CONFIG
-        # 资料库 ID 配置参数
-        configured_knowledge_base_id = str(config.knowledge_base_id)
         # 上传目录配置参数
         configured_upload_dir = Path(config.upload_dir)
         # 最大上传大小配置参数
@@ -83,10 +105,8 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
         # 上传目录重写或默认配置
         upload_root = upload_root_override or configured_upload_dir
         # 验证并处理请求中的资料库 ID
-        requested_knowledge_base_id = (knowledge_base_id or "").strip() or configured_knowledge_base_id
-        
         try:
-            knowledge_base_id = validate_knowledge_base_id(requested_knowledge_base_id)
+            knowledge_base_id = _resolve_knowledge_base_id(knowledge_base_id)
         except ValueError as exc:
             # 处理无效的资料库 ID
             return _build_error_response(
@@ -162,39 +182,57 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
             # 删除临时文件
             temp_path.unlink(missing_ok=True)
 
-    @app.delete("/documents/{document_id}")
-    def delete_document(document_id: str, request: Request):
+    @app.delete("/knowledge-bases/{knowledge_base_id}/documents/{document_id}")
+    def delete_knowledge_base_document(knowledge_base_id: str, document_id: str, request: Request):
         """
-        删除指定文档及其索引数据
+        删除指定知识库中的文档及其索引数据
         Args:
+            knowledge_base_id: 知识库 ID
             document_id: 需要删除的文档 ID
             request: 当前 HTTP 请求
         Returns:
-            删除结果；文档不存在时返回 404 错误响应
+            删除结果；文档不存在或不属于当前知识库时返回 404 错误响应
         """
         request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         system = service.get_system()
         try:
-            return system.delete_document(document_id)
+            resolved_knowledge_base_id = _resolve_knowledge_base_id(knowledge_base_id)
+        except ValueError as exc:
+            return _build_error_response(
+                code="invalid_knowledge_base_id",
+                message=str(exc),
+                request_id=request_id,
+                status_code=400,
+            )
+        try:
+            return system.delete_document(document_id, resolved_knowledge_base_id)
         except KeyError:
             # 文档不存在
             return _build_document_not_found_response(document_id, request_id)
 
-    @app.post("/documents/{document_id}/reindex")
-    def reindex_document(document_id: str, request: Request):
+    @app.post("/knowledge-bases/{knowledge_base_id}/documents/{document_id}/reindex")
+    def reindex_knowledge_base_document(knowledge_base_id: str, document_id: str, request: Request):
         """
-        对指定文档重新解析并重建索引
+        对指定知识库中的文档重新解析并重建索引
         Args:
+            knowledge_base_id: 知识库 ID
             document_id: 需要重建索引的文档 ID
             request: 当前 HTTP 请求
         Returns:
-            重建索引结果；文档不存在时返回 404 错误响应
+            重建索引结果；文档不存在或不属于当前知识库时返回 404 错误响应
         """
         request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         system = service.get_system()
         try:
-            # 重建索引
-            return system.reindex_document(document_id)
+            resolved_knowledge_base_id = _resolve_knowledge_base_id(knowledge_base_id)
+        except ValueError as exc:
+            return _build_error_response(
+                code="invalid_knowledge_base_id",
+                message=str(exc),
+                request_id=request_id,
+                status_code=400,
+            )
+        try:
+            return system.reindex_document(document_id, resolved_knowledge_base_id)
         except KeyError:
-            # 文档不存在
             return _build_document_not_found_response(document_id, request_id)

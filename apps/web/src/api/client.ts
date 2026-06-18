@@ -45,8 +45,12 @@ export async function warmupKnowledgeBase(): Promise<ReadyResponse> {
   return fetchJson<ReadyResponse>("/warmup", { method: "POST" });
 }
 
-export async function listDocuments(): Promise<DocumentsResponse> {
-  return fetchJson<DocumentsResponse>("/documents");
+export async function listDocuments(
+  knowledgeBaseId = "finance",
+): Promise<DocumentsResponse> {
+  return fetchJson<DocumentsResponse>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents`,
+  );
 }
 
 export async function uploadDocument(
@@ -56,25 +60,29 @@ export async function uploadDocument(
 ) {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("knowledge_base_id", knowledgeBaseId);
   formData.append("async_index", String(asyncIndex));
-  return fetchJson("/documents/upload", { method: "POST", body: formData });
+  return fetchJson(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents/upload`,
+    { method: "POST", body: formData },
+  );
 }
 
 export async function reindexDocument(
   documentId: string,
+  knowledgeBaseId = "finance",
 ): Promise<DocumentRecord> {
   return fetchJson<DocumentRecord>(
-    `/documents/${encodeURIComponent(documentId)}/reindex`,
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents/${encodeURIComponent(documentId)}/reindex`,
     { method: "POST" },
   );
 }
 
 export async function deleteDocument(
   documentId: string,
+  knowledgeBaseId = "finance",
 ): Promise<DocumentRecord> {
   return fetchJson<DocumentRecord>(
-    `/documents/${encodeURIComponent(documentId)}`,
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents/${encodeURIComponent(documentId)}`,
     { method: "DELETE" },
   );
 }
@@ -87,7 +95,7 @@ type AskStreamOptions = {
 export async function askQuestionStream(
   question: string,
   returnTrace: boolean,
-  knowledgeBaseId = "kb-finance",
+  knowledgeBaseId = "finance",
   options: AskStreamOptions = {},
 ) {
   const startTime = performance.now();

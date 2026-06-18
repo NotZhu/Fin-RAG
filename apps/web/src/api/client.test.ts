@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { askQuestionStream, deleteDocument, reindexDocument, uploadDocument } from "./client";
+import {
+  askQuestionStream,
+  deleteDocument,
+  listDocuments,
+  reindexDocument,
+  uploadDocument,
+} from "./client";
 
 function streamResponse(chunks: string[], headers: Record<string, string> = {}) {
   const encoder = new TextEncoder();
@@ -82,11 +88,11 @@ describe("askQuestionStream", () => {
       );
     });
 
-    await askQuestionStream("q", false, "kb-finance");
+    await askQuestionStream("q", false);
 
     expect(JSON.parse(requestBody)).toEqual({
       question: "q",
-      knowledge_base_id: "kb-finance",
+      knowledge_base_id: "finance",
       return_sources: true,
       return_trace: false
     });
@@ -95,8 +101,10 @@ describe("askQuestionStream", () => {
 
 describe("uploadDocument", () => {
   test("does not send unused document category metadata", async () => {
+    let observedInput = "";
     const submittedBodies: FormData[] = [];
-    vi.spyOn(globalThis, "fetch").mockImplementationOnce((_input, init) => {
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
       submittedBodies.push(init?.body as FormData);
       return Promise.resolve(
         new Response(JSON.stringify({ status: "indexed" }), {
@@ -108,13 +116,30 @@ describe("uploadDocument", () => {
     await uploadDocument(new File(["content"], "policy.md", { type: "text/markdown" }), "kb-finance");
 
     const submittedBody = submittedBodies[0];
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/documents/upload");
     expect(submittedBody.get("file")).toBeInstanceOf(File);
-    expect(submittedBody.get("knowledge_base_id")).toBe("kb-finance");
+    expect(submittedBody.get("knowledge_base_id")).toBeNull();
     expect(submittedBody.get("document_category")).toBeNull();
   });
 });
 
 describe("document lifecycle client", () => {
+  test("lists documents for a knowledge base", async () => {
+    let observedInput = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input) => {
+      observedInput = String(input);
+      return Promise.resolve(
+        new Response(JSON.stringify({ documents: [] }), {
+          headers: { "Content-Type": "application/json" }
+        })
+      );
+    });
+
+    await listDocuments("kb-finance");
+
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/documents");
+  });
+
   test("reindexes a document by id", async () => {
     let observedInput = "";
     let observedMethod = "";
@@ -128,9 +153,9 @@ describe("document lifecycle client", () => {
       );
     });
 
-    await reindexDocument("doc-1");
+    await reindexDocument("doc-1", "kb-finance");
 
-    expect(observedInput).toBe("/documents/doc-1/reindex");
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/documents/doc-1/reindex");
     expect(observedMethod).toBe("POST");
   });
 
@@ -147,9 +172,9 @@ describe("document lifecycle client", () => {
       );
     });
 
-    await deleteDocument("doc-1");
+    await deleteDocument("doc-1", "kb-finance");
 
-    expect(observedInput).toBe("/documents/doc-1");
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/documents/doc-1");
     expect(observedMethod).toBe("DELETE");
   });
 });

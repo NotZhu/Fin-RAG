@@ -35,8 +35,8 @@ class DocumentLifecycleService:
         with system._write_lock:
             # 验证知识库ID
             knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
-            # 确保数据路径存在
-            Path(system.config.data_path).mkdir(parents=True, exist_ok=True)
+            # 确保知识库源根目录存在
+            system.knowledge_base_scope(knowledge_base_id).source_root.mkdir(parents=True, exist_ok=True)
 
             # 源文件服务实例
             source_files = system._managed_source_files()
@@ -122,11 +122,12 @@ class DocumentLifecycleService:
                 system.document_registry.mark_failed(prepared["document_id"], system._format_exception(exc))
                 raise
 
-    def delete_document(self, document_id: str) -> dict:
+    def delete_document(self, document_id: str, knowledge_base_id: str) -> dict:
         """
         删除指定文档及其索引数据
         Args:
             document_id: 需要删除的文档 ID
+            knowledge_base_id: 当前知识库 ID
         Returns:
             公开的文档记录字典
         """
@@ -134,6 +135,9 @@ class DocumentLifecycleService:
         with system._write_lock:
             # 获取文档记录
             record = system.document_registry.get(document_id)
+            # 校验文档归属指定知识库
+            if record.knowledge_base_id != validate_knowledge_base_id(knowledge_base_id):
+                raise KeyError(document_id)
             # 确保增量索引准备就绪
             system._ensure_incremental_index_ready_locked()
             # 删除管理源文件
@@ -147,16 +151,21 @@ class DocumentLifecycleService:
             # 返回文档记录
             return system._public_document(document_id)
 
-    def reindex_document(self, document_id: str) -> dict:
+    def reindex_document(self, document_id: str, knowledge_base_id: str) -> dict:
         """
         对指定文档重新解析并重建索引
         Args:
             document_id: 需要重建索引的文档 ID
+            knowledge_base_id: 当前知识库 ID
         Returns:
             公开的文档记录字典
         """
         system = self.system
         with system._write_lock:
+            record = system.document_registry.get(document_id)
+            # 校验文档归属指定知识库
+            if record.knowledge_base_id != validate_knowledge_base_id(knowledge_base_id):
+                raise KeyError(document_id)
             # 标记文档为解析中
             system.document_registry.mark_parsing(document_id)
             try: 

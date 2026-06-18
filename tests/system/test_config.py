@@ -10,7 +10,7 @@ def test_default_paths_are_absolute_and_finance_oriented():
 
     assert Path(config.data_path).is_absolute()
     assert Path(config.data_path) == PROJECT_ROOT / "data" / "documents"
-    assert config.knowledge_base_id == "kb-finance"
+    assert config.knowledge_base_id == "finance"
     assert config.chunk_size == 300
     assert config.chunk_overlap == 60
     assert config.reranker_provider == "none"
@@ -90,16 +90,16 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert not hasattr(config, "hyde_enabled")
 
 
-def test_legacy_llamaindex_storage_dir_is_supported_for_one_version(monkeypatch):
-    monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "legacy_llama")
+def test_removed_llamaindex_storage_dir_alias_is_ignored(monkeypatch):
+    monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "ignored_llama")
 
     config = RAGConfig.from_env()
 
-    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "legacy_llama"
+    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "storage" / "llamaindex"
 
 
-def test_new_llamaindex_index_store_dir_wins_over_legacy_alias(monkeypatch):
-    monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "legacy_llama")
+def test_llamaindex_index_store_dir_uses_current_environment_key(monkeypatch):
+    monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "ignored_llama")
     monkeypatch.setenv("RAG_LLAMAINDEX_INDEX_STORE_DIR", "new_llama")
 
     config = RAGConfig.from_env()

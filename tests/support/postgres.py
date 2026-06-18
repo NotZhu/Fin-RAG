@@ -5,6 +5,7 @@ import os
 import pytest
 
 TABLES = (
+    "finrag_knowledge_bases",
     "bm25_term_counts",
     "bm25_chunks",
     "bm25_terms",

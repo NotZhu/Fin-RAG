@@ -33,6 +33,13 @@ def test_readme_is_github_style_and_current_state_only():
     assert "LlamaIndex `AutoMergingRetriever`" not in readme
     ask_request = readme.split("### Ask Request", 1)[1].split("### Ask Response", 1)[0]
     assert '"retrieval_strategy": "hybrid_rerank"' not in ask_request
+    for removed_document_endpoint in [
+        "`/documents`",
+        "`/documents/upload`",
+        "`/documents/{document_id}`",
+        "`/documents/{document_id}/reindex`",
+    ]:
+        assert removed_document_endpoint not in readme
     assert "general -> 普通 LLM" in readme
 
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")

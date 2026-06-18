@@ -24,7 +24,7 @@ class DocumentRegistryStore(Protocol):
 
     records: Dict[str, Any] # 以 document_id 为 key 的文档记录缓存
 
-    def list_public(self) -> List[dict]:
+    def list_public(self, knowledge_base_id: Optional[str] = None) -> List[dict]:
         """列出可对外展示的文档记录"""
         ...
 

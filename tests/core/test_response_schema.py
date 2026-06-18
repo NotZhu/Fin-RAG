@@ -66,7 +66,7 @@ def test_finrag_response_serializes_sources_and_trace():
     assert payload["trace"]["pipeline_steps"][0]["id"] == "hybrid_search"
     assert payload["trace"]["retrieved_nodes"] == [{"node_id": "node-1"}]
     assert payload["trace"]["evidence_nodes"] == [{"node_id": "node-1"}]
-    legacy_trace_key = "_".join(("final", "evidence"))
-    assert legacy_trace_key not in payload["trace"]
+    removed_trace_key = "_".join(("final", "evidence"))
+    assert removed_trace_key not in payload["trace"]
     assert "retrieved_chunks" not in payload["trace"]
     assert "context_documents" not in payload["trace"]

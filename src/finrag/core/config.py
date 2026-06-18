@@ -47,7 +47,7 @@ class RAGConfig:
     # 路径配置
     data_path: str = field(default_factory=lambda: str(PROJECT_ROOT / "data" / "documents")) # 默认数据目录
     upload_dir: str = field(default_factory=lambda: str(PROJECT_ROOT / "storage" / "uploads")) # 上传临时目录
-    knowledge_base_id: str = "kb-finance" # 默认资料库 ID
+    knowledge_base_id: str = "finance" # 默认资料库 ID
     database_url: str = "postgresql://finrag:finrag@localhost:5432/finrag" # PostgreSQL 连接地址
     redis_url: str = "redis://localhost:6379/0" # Redis 缓存连接地址
     milvus_host: str = "localhost" # Milvus 服务地址
@@ -198,9 +198,6 @@ class RAGConfig:
             for field_name, env_name in env_mapping.items()
             if env_name in os.environ
         }
-        # 如果未指定 LlamaIndex 索引存储目录，使用默认值
-        if "llamaindex_index_store_dir" not in config_dict and "RAG_LLAMAINDEX_STORAGE_DIR" in os.environ:
-            config_dict["llamaindex_index_store_dir"] = os.environ["RAG_LLAMAINDEX_STORAGE_DIR"]
         return cls(**config_dict) # 字典解包
     
     def to_dict(self) -> Dict[str, Any]:

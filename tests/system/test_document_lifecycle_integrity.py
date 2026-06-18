@@ -172,7 +172,7 @@ def test_delete_document_removes_only_target_document_from_incremental_index(tmp
     first_record = system.ingest_uploaded_file(first, "first.md", "kb-finance")
     system.ingest_uploaded_file(second, "second.md", "kb-finance")
 
-    system.delete_document(first_record["document_id"])
+    system.delete_document(first_record["document_id"], "kb-finance")
 
     old_hits = system.retrieval_module.hybrid_search("独有术语甲", top_k=3, filters={"knowledge_base_id": "kb-finance"})
     new_hits = system.retrieval_module.hybrid_search("独有术语乙", top_k=3, filters={"knowledge_base_id": "kb-finance"})
@@ -267,7 +267,7 @@ def test_delete_document_does_not_unlink_registry_source_outside_data_root(tmp_p
     )
     system.document_registry.mark_indexed(record.document_id, chunk_count=1)
 
-    result = system.delete_document(record.document_id)
+    result = system.delete_document(record.document_id, "kb-finance")
 
     assert result["status"] == "deleted"
     assert external.exists()
@@ -307,7 +307,7 @@ def test_reindex_document_marks_record_failed_when_indexing_fails(tmp_path):
     system.data_module.chunk_single_document = fail_single_document
 
     with pytest.raises(RuntimeError, match="重建索引失败"):
-        system.reindex_document(prepared["document_id"])
+        system.reindex_document(prepared["document_id"], "kb-finance")
 
     record = system.document_registry.get(prepared["document_id"])
     assert record.status == "failed"

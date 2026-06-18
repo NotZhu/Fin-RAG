@@ -1,4 +1,4 @@
-from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.schema import TextNode, TransformComponent
 
 from finrag.indexing.nodes import (
@@ -6,6 +6,17 @@ from finrag.indexing.nodes import (
     FinRAGMetadataTransform,
     build_ingestion_pipeline,
 )
+
+
+class StaticEmbedding(BaseEmbedding):
+    def _get_query_embedding(self, query: str):
+        return [0.1, 0.2, 0.3]
+
+    def _get_text_embedding(self, text: str):
+        return [0.1, 0.2, 0.3]
+
+    async def _aget_query_embedding(self, query: str):
+        return self._get_query_embedding(query)
 
 
 def test_nodes_module_reuses_parser_supported_suffixes():
@@ -17,7 +28,7 @@ def test_build_ingestion_pipeline_accepts_finrag_metadata_transform(tmp_path):
 
     pipeline = build_ingestion_pipeline(
         module,
-        MockEmbedding(embed_dim=3),
+        StaticEmbedding(),
         vector_store=None,
         docstore=None,
     )

@@ -167,9 +167,11 @@ class PostgreSQLDocumentRegistry:
         """
         return [record.to_dict() for record in sorted(self.records.values(), key=lambda item: item.upload_time)]
 
-    def list_public(self) -> List[dict]:
+    def list_public(self, knowledge_base_id: str | None = None) -> List[dict]:
         """
         列出对外展示的非删除文档记录
+        Args:
+            knowledge_base_id: 可选知识库 ID，传入时只返回该知识库文档
         Returns:
             隐藏 source_path 和 content_hash 等内部字段后的文档列表
         """
@@ -187,9 +189,10 @@ class PostgreSQLDocumentRegistry:
         return [
             # 只保留公开字段
             {key: value for key, value in record.to_dict().items() if key in public_fields}
-            # 按 upload_time 升序，并过滤掉 status 为 deleted 的记录
+            # 按 upload_time 升序，并过滤掉 status 为 deleted 的记录，仅返回指定知识库文档
             for record in sorted(self.records.values(), key=lambda item: item.upload_time)
             if record.status != "deleted"
+            and (knowledge_base_id is None or record.knowledge_base_id == knowledge_base_id)
         ]
 
     def get(self, document_id: str) -> Any:

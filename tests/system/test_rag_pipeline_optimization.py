@@ -78,7 +78,7 @@ def test_knowledge_engine_retrieves_and_generates(tmp_path):
     engine = FakeRouterEngine([NodeWithScore(node=node, score=0.9)])
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("客户风险等级如何匹配？", return_sources=True, return_trace=True)
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_sources=True, return_trace=True)
     payload = response.to_dict()
 
     assert payload["answer"] == "根据证据回答[1]"
@@ -99,7 +99,7 @@ def test_generated_answer_body_is_returned_with_structured_sources(tmp_path):
     engine = FakeRouterEngine([NodeWithScore(node=node, score=0.9)], answer=answer)
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("对公客户首次建立关系时需要哪些资料？", return_sources=True)
+    response = system.ask_question("对公客户首次建立关系时需要哪些资料？", knowledge_base_id="kb-finance", return_sources=True)
 
     assert response.answer == answer
     assert response.sources[0].filename == "policy.md"
@@ -115,7 +115,7 @@ def test_knowledge_engine_emits_stream_tokens(tmp_path):
     system = _setup_knowledge_system(tmp_path, engine)
     events = []
 
-    response = system.ask_question("客户风险等级如何匹配？", return_sources=True, event_sink=events.append)
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_sources=True, event_sink=events.append)
     assert response.answer == "根据证据回答[1]"
     assert [event["text"] for event in events if event["type"] == "token"] == ["根据", "证据", "回答[1]"]
 
@@ -125,7 +125,7 @@ def test_knowledge_engine_treats_missing_scores_as_zero(tmp_path):
     engine = FakeRouterEngine([NodeWithScore(node=node, score=None)])
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("客户风险等级如何匹配？", return_sources=True, return_trace=True)
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_sources=True, return_trace=True)
     payload = response.to_dict()
 
     assert payload["answer"] == "根据证据回答[1]"
@@ -138,7 +138,7 @@ def test_ask_pipeline_uses_llamaindex_router_strategy(tmp_path):
     engine = FakeRouterEngine([NodeWithScore(node=node, score=0.9)])
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("为什么要做受益所有人识别？", return_trace=True)
+    response = system.ask_question("为什么要做受益所有人识别？", knowledge_base_id="kb-finance", return_trace=True)
     payload = response.to_dict()
 
     assert payload["retrieval_strategy"] == "llamaindex_router"
@@ -151,7 +151,7 @@ def test_router_path_does_not_initialize_generation_module(tmp_path):
     system = _setup_knowledge_system(tmp_path, engine)
     system.generation_module = None
 
-    response = system.ask_question("为什么要做受益所有人识别？")
+    response = system.ask_question("为什么要做受益所有人识别？", knowledge_base_id="kb-finance")
 
     assert response.answer == "根据证据回答[1]"
     assert system.generation_module is None
@@ -161,7 +161,7 @@ def test_router_general_route_without_sources(tmp_path):
     engine = FakeRouterEngine([], answer="普通回答")
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("帮我写一首春天的诗", return_sources=True, return_trace=True)
+    response = system.ask_question("帮我写一首春天的诗", knowledge_base_id="kb-finance", return_sources=True, return_trace=True)
     payload = response.to_dict()
 
     assert len(system.router_engine.calls) == 1
@@ -175,7 +175,7 @@ def test_general_route_bypasses_knowledge_engine(tmp_path):
     engine = FakeRouterEngine([], answer="普通回答")
     system = _setup_knowledge_system(tmp_path, engine)
 
-    response = system.ask_question("帮我写一首春天的诗", return_trace=True)
+    response = system.ask_question("帮我写一首春天的诗", knowledge_base_id="kb-finance", return_trace=True)
     payload = response.to_dict()
 
     assert payload["route_type"] == "general"
@@ -209,7 +209,7 @@ def test_evidence_is_deduped_and_sources_are_renumbered(tmp_path):
     system = _setup_knowledge_system(tmp_path, engine, generation=gen)
     system.data_module = SimpleNamespace()
 
-    response = system.ask_question("客户风险等级如何匹配？", return_sources=True)
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_sources=True)
     assert response.answer == "根据证据回答[1]"
 
 
@@ -219,7 +219,7 @@ def test_analysis_event_sent_before_query(tmp_path):
     system = _setup_knowledge_system(tmp_path, engine)
     events = []
 
-    system.ask_question("客户风险等级如何匹配？", return_sources=True, event_sink=events.append)
+    system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_sources=True, event_sink=events.append)
 
     analysis_events = [e for e in events if e["type"] == "analysis"]
     assert len(analysis_events) == 1
@@ -239,6 +239,7 @@ def test_pipeline_step_events_and_trace_are_emitted_for_router_path(tmp_path):
 
     response = system.ask_question(
         "客户风险等级如何匹配？",
+        knowledge_base_id="kb-finance",
         return_sources=True,
         return_trace=True,
         event_sink=events.append,
@@ -262,7 +263,13 @@ def test_knowledge_unavailable_returns_structured_error(tmp_path):
     system = _setup_knowledge_system(tmp_path, engine)
     events = []
 
-    response = system.ask_question("客户风险等级如何匹配？", return_sources=True, return_trace=True, event_sink=events.append)
+    response = system.ask_question(
+        "客户风险等级如何匹配？",
+        knowledge_base_id="kb-finance",
+        return_sources=True,
+        return_trace=True,
+        event_sink=events.append,
+    )
     payload = response.to_dict()
 
     assert "知识库当前不可用" in payload["answer"]
@@ -289,7 +296,7 @@ def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
     system.generation_module = NoFallbackGeneration()
     events = []
 
-    response = system.ask_question("客户风险等级如何匹配？", return_trace=True, event_sink=events.append)
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_trace=True, event_sink=events.append)
     payload = response.to_dict()
 
     assert "知识库当前不可用" in payload["answer"]

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from finrag.core.node_schema import TextNode
 from finrag.ingestion import DocumentRecord
+from finrag.storage.knowledge_base_registry import DuplicateKnowledgeBaseError, KnowledgeBaseRecord
 from finrag.storage.protocols import SparseVector
 
 
@@ -26,7 +27,7 @@ class MemoryDocumentRegistry:
     def list(self) -> List[dict]:
         return [record.to_dict() for record in sorted(self.records.values(), key=lambda item: item.upload_time)]
 
-    def list_public(self) -> List[dict]:
+    def list_public(self, knowledge_base_id: str | None = None) -> List[dict]:
         public_fields = {
             "document_id",
             "filename",
@@ -41,6 +42,7 @@ class MemoryDocumentRegistry:
             {key: value for key, value in record.to_dict().items() if key in public_fields}
             for record in sorted(self.records.values(), key=lambda item: item.upload_time)
             if record.status != "deleted"
+            and (knowledge_base_id is None or record.knowledge_base_id == knowledge_base_id)
         ]
 
     def get(self, document_id: str) -> DocumentRecord:
@@ -243,3 +245,39 @@ class MemoryIndexManifestStore:
 
     def load_manifest(self) -> Optional[Dict[str, Any]]:
         return dict(self.manifest) if self.manifest is not None else None
+
+
+class MemoryKnowledgeBaseRegistry:
+    def __init__(self, database_url: str | None = None):
+        self.database_url = database_url
+        self.records: Dict[str, KnowledgeBaseRecord] = {}
+
+    def ensure_default(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        if knowledge_base_id in self.records:
+            return self.records[knowledge_base_id]
+        now = _utc_now_iso()
+        record = KnowledgeBaseRecord(
+            knowledge_base_id=knowledge_base_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.records[knowledge_base_id] = record
+        return record
+
+    def create(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        if knowledge_base_id in self.records:
+            raise DuplicateKnowledgeBaseError(knowledge_base_id)
+        now = _utc_now_iso()
+        record = KnowledgeBaseRecord(
+            knowledge_base_id=knowledge_base_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.records[knowledge_base_id] = record
+        return record
+
+    def list(self) -> List[KnowledgeBaseRecord]:
+        return sorted(self.records.values(), key=lambda item: (item.created_at, item.knowledge_base_id))
+
+    def get_optional(self, knowledge_base_id: str) -> Optional[KnowledgeBaseRecord]:
+        return self.records.get(knowledge_base_id)

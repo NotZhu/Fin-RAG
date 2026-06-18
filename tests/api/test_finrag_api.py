@@ -27,7 +27,7 @@ class FakeFinRAGSystem:
     def __init__(self):
         self.documents = []
         self.config = SimpleNamespace(
-            knowledge_base_id="kb-config-default",
+            knowledge_base_id="finance",
             upload_dir="storage/uploads",
             max_upload_bytes=20 * 1024 * 1024,
         )
@@ -45,8 +45,12 @@ class FakeFinRAGSystem:
     def ready(self):
         return {"ready": True, "status": "ready", "total_documents": len(self.documents), "total_chunks": 0, "last_error": None}
 
-    def list_documents(self):
-        return self.documents
+    def list_documents(self, knowledge_base_id: str):
+        return [
+            document
+            for document in self.documents
+            if document["knowledge_base_id"] == knowledge_base_id
+        ]
 
     def ingest_uploaded_file(self, file_path: Path, filename: str, knowledge_base_id: str):
         record = {
@@ -82,12 +86,24 @@ class FakeFinRAGSystem:
                 return document
         return {"document_id": document_id, "status": "failed"}
 
-    def delete_document(self, document_id: str):
-        self.documents = [doc for doc in self.documents if doc["document_id"] != document_id]
-        return {"document_id": document_id, "status": "deleted"}
+    def delete_document(self, document_id: str, knowledge_base_id: str):
+        for document in self.documents:
+            if document["document_id"] != document_id:
+                continue
+            if document["knowledge_base_id"] != knowledge_base_id:
+                raise KeyError(document_id)
+            self.documents = [doc for doc in self.documents if doc["document_id"] != document_id]
+            return {"document_id": document_id, "status": "deleted"}
+        raise KeyError(document_id)
 
-    def reindex_document(self, document_id: str):
-        return {"document_id": document_id, "status": "indexed"}
+    def reindex_document(self, document_id: str, knowledge_base_id: str):
+        for document in self.documents:
+            if document["document_id"] != document_id:
+                continue
+            if document["knowledge_base_id"] != knowledge_base_id:
+                raise KeyError(document_id)
+            return {"document_id": document_id, "status": "indexed", "knowledge_base_id": document["knowledge_base_id"]}
+        raise KeyError(document_id)
 
     def ask_question(self, question: str, **kwargs):
         assert "stream" not in kwargs
@@ -116,10 +132,10 @@ class FakeFinRAGSystem:
 
 
 class FakeMissingDocumentSystem(FakeFinRAGSystem):
-    def delete_document(self, document_id: str):
+    def delete_document(self, document_id: str, knowledge_base_id: str):
         raise KeyError(document_id)
 
-    def reindex_document(self, document_id: str):
+    def reindex_document(self, document_id: str, knowledge_base_id: str):
         raise KeyError(document_id)
 
 
@@ -128,19 +144,41 @@ class FakeFailingIngestSystem(FakeFinRAGSystem):
         raise RuntimeError("索引失败")
 
 
+def test_removed_document_lifecycle_routes_are_not_registered(tmp_path):
+    app = create_app(system_factory=FakeFinRAGSystem, upload_dir=tmp_path)
+    client = TestClient(app)
+
+    responses = [
+        client.get("/documents"),
+        client.post(
+            "/documents/upload",
+            files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
+        ),
+        client.delete("/documents/doc-1"),
+        client.post("/documents/doc-1/reindex"),
+    ]
+
+    assert [response.status_code for response in responses] == [404, 404, 404, 404]
+    assert [response.json() for response in responses] == [
+        {"detail": "Not Found"},
+        {"detail": "Not Found"},
+        {"detail": "Not Found"},
+        {"detail": "Not Found"},
+    ]
+
+
 def test_document_upload_list_delete_and_ask_api(tmp_path):
     app = create_app(system_factory=FakeFinRAGSystem, upload_dir=tmp_path)
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/finance/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
     assert upload.status_code == 200
     assert upload.json()["status"] == "indexed"
 
-    listed = client.get("/documents")
+    listed = client.get("/knowledge-bases/finance/documents")
     assert listed.status_code == 200
     assert listed.json()["documents"][0]["filename"] == "policy.md"
 
@@ -162,9 +200,54 @@ def test_document_upload_list_delete_and_ask_api(tmp_path):
     assert "资料显示客户风险等级应与产品风险等级匹配" in body
     assert "适当性管理办法.md" in body
 
-    deleted = client.delete("/documents/doc-1")
+    deleted = client.delete("/knowledge-bases/finance/documents/doc-1")
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "deleted"
+
+
+def test_document_routes_filter_by_knowledge_base_id(tmp_path):
+    app = create_app(system_factory=FakeFinRAGSystem, upload_dir=tmp_path)
+    client = TestClient(app)
+
+    finance_upload = client.post(
+        "/knowledge-bases/finance/documents/upload",
+        files={"file": ("finance.md", b"# finance\ncontent", "text/markdown")},
+    )
+    risk_upload = client.post(
+        "/knowledge-bases/risk/documents/upload",
+        files={"file": ("risk.md", b"# risk\ncontent", "text/markdown")},
+    )
+
+    assert finance_upload.status_code == 200
+    assert risk_upload.status_code == 200
+
+    scoped_finance = client.get("/knowledge-bases/finance/documents")
+    scoped_risk = client.get("/knowledge-bases/risk/documents")
+
+    assert [doc["filename"] for doc in scoped_finance.json()["documents"]] == ["finance.md"]
+    assert [doc["filename"] for doc in scoped_risk.json()["documents"]] == ["risk.md"]
+
+
+def test_scoped_document_delete_and_reindex_return_404_for_other_knowledge_base(tmp_path):
+    app = create_app(system_factory=FakeFinRAGSystem, upload_dir=tmp_path)
+    client = TestClient(app)
+
+    upload = client.post(
+        "/knowledge-bases/finance/documents/upload",
+        files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
+    )
+    document_id = upload.json()["document_id"]
+
+    bad_delete = client.delete(f"/knowledge-bases/risk/documents/{document_id}")
+    bad_reindex = client.post(f"/knowledge-bases/risk/documents/{document_id}/reindex")
+    good_reindex = client.post(f"/knowledge-bases/finance/documents/{document_id}/reindex")
+
+    assert bad_delete.status_code == 404
+    assert bad_delete.json()["error"]["code"] == "document_not_found"
+    assert bad_reindex.status_code == 404
+    assert bad_reindex.json()["error"]["code"] == "document_not_found"
+    assert good_reindex.status_code == 200
+    assert good_reindex.json()["knowledge_base_id"] == "finance"
 
 
 def test_upload_removes_temporary_file_after_sync_index(tmp_path):
@@ -172,8 +255,7 @@ def test_upload_removes_temporary_file_after_sync_index(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
@@ -181,17 +263,17 @@ def test_upload_removes_temporary_file_after_sync_index(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_upload_uses_system_config_default_knowledge_base_id(tmp_path):
+def test_scoped_upload_uses_path_knowledge_base_id(tmp_path):
     app = create_app(system_factory=FakeFinRAGSystem, upload_dir=tmp_path)
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
+        "/knowledge-bases/finance/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
     assert upload.status_code == 200
-    assert upload.json()["knowledge_base_id"] == "kb-config-default"
+    assert upload.json()["knowledge_base_id"] == "finance"
 
 
 def test_upload_max_size_uses_system_config(tmp_path):
@@ -204,8 +286,7 @@ def test_upload_max_size_uses_system_config(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("policy.md", b"123456", "text/markdown")},
     )
 
@@ -219,8 +300,8 @@ def test_async_upload_removes_temporary_file_after_prepare(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance", "async_index": "true"},
+        "/knowledge-bases/kb-finance/documents/upload",
+        data={"async_index": "true"},
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
@@ -233,8 +314,7 @@ def test_upload_removes_temporary_file_when_indexing_fails(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
@@ -247,8 +327,7 @@ def test_upload_uses_basename_for_client_supplied_filename_path(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("../secret/policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
@@ -260,8 +339,8 @@ def test_delete_and_reindex_missing_document_return_404(tmp_path):
     app = create_app(system_factory=FakeMissingDocumentSystem, upload_dir=tmp_path)
     client = TestClient(app)
 
-    deleted = client.delete("/documents/missing-doc")
-    reindexed = client.post("/documents/missing-doc/reindex")
+    deleted = client.delete("/knowledge-bases/finance/documents/missing-doc")
+    reindexed = client.post("/knowledge-bases/finance/documents/missing-doc/reindex")
 
     assert deleted.status_code == 404
     assert deleted.json()["error"]["code"] == "document_not_found"
@@ -276,7 +355,11 @@ def test_ask_ignores_removed_retrieval_strategy_field(tmp_path):
     with client.stream(
         "POST",
         "/ask",
-        json={"question": "客户风险等级如何匹配？", "retrieval_strategy": "unknown"},
+        json={
+            "question": "客户风险等级如何匹配？",
+            "knowledge_base_id": "finance",
+            "retrieval_strategy": "unknown",
+        },
     ) as response:
         body = "".join(response.iter_text())
 
@@ -289,8 +372,7 @@ def test_upload_rejects_unsupported_file_type(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("malware.exe", b"not a document", "application/octet-stream")},
     )
 
@@ -303,8 +385,7 @@ def test_upload_rejects_invalid_knowledge_base_id_before_storing_file(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "../outside"},
+        "/knowledge-bases/bad!/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
 
@@ -318,13 +399,11 @@ def test_upload_accepts_supported_file_and_rejects_unsupported_suffix(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
     )
     bad = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance"},
+        "/knowledge-bases/kb-finance/documents/upload",
         files={"file": ("malware.exe", b"nope", "application/octet-stream")},
     )
 
@@ -338,8 +417,8 @@ def test_async_upload_returns_real_document_id(tmp_path):
     client = TestClient(app)
 
     upload = client.post(
-        "/documents/upload",
-        data={"knowledge_base_id": "kb-finance", "async_index": "true"},
+        "/knowledge-bases/kb-finance/documents/upload",
+        data={"async_index": "true"},
         files={"file": ("policy.txt", b"content", "text/plain")},
     )
 
