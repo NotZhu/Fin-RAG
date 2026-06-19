@@ -73,15 +73,18 @@ class LazyKnowledgeQueryEngine(BaseQueryEngine):
     def __init__(
         self,
         system: Any,
+        knowledge_base_id: str | None = None,
         callback_manager: CallbackManager | None = None,
     ) -> None:
         """
         初始化懒加载知识查询引擎
         Args:
             system: 系统对象
+            knowledge_base_id: 可选知识库 ID，用于限定懒加载目标
             callback_manager: 回调管理器
         """
         self._system = system
+        self._knowledge_base_id = knowledge_base_id
         # 初始化回调管理器
         super().__init__(callback_manager=callback_manager)
 
@@ -94,7 +97,10 @@ class LazyKnowledgeQueryEngine(BaseQueryEngine):
             Response: 懒加载知识查询引擎回答
         """
         # 确保知识库已初始化
-        self._system.ensure_knowledge_base_ready()
+        if self._knowledge_base_id is None:
+            self._system.ensure_knowledge_base_ready()
+        else:
+            self._system.ensure_knowledge_base_ready(self._knowledge_base_id)
         # 确保知识查询引擎已初始化
         engine = self._system.knowledge_query_engine
         if engine is None:
@@ -170,12 +176,13 @@ class GeneralChatEngine(BaseQueryEngine):
         return {}
 
 
-def build_top_router(*, system: Any, llm: Any | None = None) -> Any:
+def build_top_router(*, system: Any, llm: Any | None = None, knowledge_base_id: str | None = None) -> Any:
     """
     构建顶部路由查询引擎
     Args:
         system: 系统对象
         llm: DashScope LLM实例
+        knowledge_base_id: 知识库 ID
     Returns:
         RouterQueryEngine: 顶部路由查询引擎
     """
@@ -184,7 +191,7 @@ def build_top_router(*, system: Any, llm: Any | None = None) -> Any:
     # 初始化工具列表
     tools: list[QueryEngineTool] = []
     # 知识查询引擎
-    knowledge_engine: Any = LazyKnowledgeQueryEngine(system)
+    knowledge_engine: Any = LazyKnowledgeQueryEngine(system, knowledge_base_id=knowledge_base_id)
     tools.append(
         QueryEngineTool.from_defaults(
             query_engine=knowledge_engine,

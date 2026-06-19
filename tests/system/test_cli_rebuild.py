@@ -174,7 +174,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
     system.data_module = data_module
     system.index_module = FakeIndexModule()
     system.generation_module = SimpleNamespace()
-    system._refresh_retrieval = lambda vector_index, leaf_nodes: None
+    system._refresh_retrieval = lambda vector_index, leaf_nodes, knowledge_base_id: None
 
     result = system.rebuild_from_sources()
 

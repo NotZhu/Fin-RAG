@@ -85,6 +85,7 @@ class QAPipelineService:
 
         # 检索策略
         strategy = getattr(system.config, "retrieval_strategy", "llamaindex_router")
+        filters = self.knowledge_base_filters(system, knowledge_base_id)
         analysis_start = time.perf_counter()
 
         emit_step("query_analysis", 1, "Query Analysis", "识别金融风控问题", "running")
@@ -116,7 +117,7 @@ class QAPipelineService:
                 question=question,
                 strategy=strategy,
                 route_type="knowledge",
-                filters={"knowledge_base_id": knowledge_base_id},
+                filters=filters,
                 error=RuntimeError("router_engine 未初始化"),
                 events=events,
                 timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
@@ -133,6 +134,7 @@ class QAPipelineService:
             total_start=total_start,
             return_sources=return_sources, return_trace=return_trace,
             knowledge_base_id=knowledge_base_id,
+            filters=filters,
             events=events,
             pipeline_steps=pipeline_steps,
             emit=emit, emit_step=emit_step, check_cancelled=check_cancelled,
@@ -148,6 +150,7 @@ class QAPipelineService:
         return_sources: bool,
         return_trace: bool,
         knowledge_base_id: str,
+        filters: Dict[str, Any],
         events: List[Dict[str, Any]],
         pipeline_steps: List[Dict[str, Any]],
         emit: Callable[..., None],
@@ -198,7 +201,7 @@ class QAPipelineService:
                 )
                 return self._knowledge_unavailable(
                     question=question, strategy=strategy, route_type="knowledge",
-                    filters={"knowledge_base_id": knowledge_base_id},
+                    filters=filters,
                     error=exc, events=events,
                     timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
                     pipeline_steps=pipeline_steps,
@@ -314,6 +317,7 @@ class QAPipelineService:
             trace = RAGTrace(
                 retrieval_strategy=strategy, 
                 route_type=route_type,
+                filters=filters,
                 timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
                 pipeline_steps=pipeline_steps,
                 retrieved_nodes=[self.node_trace(rank, item.node, item.score) for rank, item in enumerate(retrieved, 1)],
@@ -380,6 +384,23 @@ class QAPipelineService:
         )
         emit("done", response=response.to_dict(), final_decision="knowledge_unavailable")
         return response
+
+    @staticmethod
+    def knowledge_base_filters(system: Any, knowledge_base_id: str) -> Dict[str, Any]:
+        """
+        构建当前知识库 trace 过滤信息
+        Args:
+            system: FinRAGSystem 或测试替身
+            knowledge_base_id: 知识库 ID
+        Returns:
+            包含知识库和 Milvus collection 的过滤信息
+        """
+        filters = {"knowledge_base_id": knowledge_base_id}
+        scope_builder = getattr(system, "knowledge_base_scope", None)
+        if callable(scope_builder):
+            scope = scope_builder(knowledge_base_id)
+            filters["collection"] = str(getattr(scope, "collection_name", "") or "")
+        return filters
 
     @staticmethod
     def _error_code(error: Exception) -> str:

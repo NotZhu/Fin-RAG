@@ -31,7 +31,7 @@ class FakeFinRAGSystem:
         self.build_calls += 1
         self.retrieval_module = object()
 
-    def ensure_knowledge_base_ready(self):
+    def ensure_knowledge_base_ready(self, knowledge_base_id=None):
         self.ensure_calls += 1
         if self.retrieval_module is not None and self.data_module is not None:
             return

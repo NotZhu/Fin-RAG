@@ -18,6 +18,7 @@ from finrag.application.knowledge_base import KnowledgeBaseService
 from finrag.application.knowledge_base_scope import KnowledgeBaseScope
 from finrag.application.llamaindex_engines import build_knowledge_engines, build_top_router
 from finrag.application.qa_pipeline import QAPipelineService
+from finrag.application.runtime import KnowledgeBaseRuntime
 from finrag.application.source_files import ManagedSourceFileService
 from finrag.indexing import (
     DataPreparationModule,
@@ -85,6 +86,10 @@ class FinRAGSystem:
         self.summary_index: Optional[Any] = None
         # 顶部路由引擎
         self.router_engine: Optional[Any] = None
+        # 每个知识库独立的运行时模块和检索引擎缓存
+        self.kb_runtimes: Dict[str, KnowledgeBaseRuntime] = {}
+        # 当前激活的知识库运行时 key
+        self._active_runtime_key: Optional[str] = None
 
 
         # 文档注册表
@@ -120,35 +125,54 @@ class FinRAGSystem:
             self.config.reranker_top_n,
         )
 
-    def initialize_system(self) -> None:
+    def initialize_system(self, knowledge_base_id: str | None = None) -> None:
         """
         初始化数据准备、索引构建和生成模块
+        Args:
+            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
         Returns:
             无返回值，初始化后的模块写入实例属性
         """
-        self.knowledge_base.initialize_system()
+        if knowledge_base_id is None:
+            self.knowledge_base.initialize_system()
+            return
+        self.knowledge_base.initialize_system(knowledge_base_id)
 
-    def build_knowledge_base(self) -> None:
+    def build_knowledge_base(self, knowledge_base_id: str | None = None) -> None:
         """
         加载文档、构建层级节点、创建或复用向量索引，并初始化检索模块
+        Args:
+            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
         Returns:
             无返回值，资料库状态写入实例属性
         """
-        self.knowledge_base.build_knowledge_base()
+        if knowledge_base_id is None:
+            self.knowledge_base.build_knowledge_base()
+            return
+        self.knowledge_base.build_knowledge_base(knowledge_base_id)
 
-    def ensure_knowledge_base_ready(self) -> None:
+    def ensure_knowledge_base_ready(self, knowledge_base_id: str | None = None) -> None:
         """
         确保 knowledge 问答所需的数据、索引和检索模块已经可用
+        Args:
+            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
         """
-        self.knowledge_base.ensure_knowledge_base_ready()
+        if knowledge_base_id is None:
+            self.knowledge_base.ensure_knowledge_base_ready()
+            return
+        self.knowledge_base.ensure_knowledge_base_ready(knowledge_base_id)
 
-    def rebuild_from_sources(self) -> dict:
+    def rebuild_from_sources(self, knowledge_base_id: str | None = None) -> dict:
         """
         从源文档强制全量重建 PostgreSQL 节点/BM25 状态和 Milvus collection
+        Args:
+            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
         Returns:
             重建摘要，供 CLI 和运维任务展示
         """
-        return self.knowledge_base.rebuild_from_sources()
+        if knowledge_base_id is None:
+            return self.knowledge_base.rebuild_from_sources()
+        return self.knowledge_base.rebuild_from_sources(knowledge_base_id)
 
     def ready(self) -> dict:
         """
@@ -385,6 +409,8 @@ class FinRAGSystem:
             FinRAGResponse 问答响应对象
         """
         scope = self.knowledge_base_scope(knowledge_base_id)
+        # 按请求知识库准备并激活运行时，避免复用其他知识库的 router/retriever。
+        self.ensure_knowledge_base_ready(scope.knowledge_base_id)
         return self.qa_pipeline.ask_question(
             question,
             return_sources=return_sources,
@@ -394,14 +420,85 @@ class FinRAGSystem:
             cancel_event=cancel_event,
         )
 
-    def _ensure_modules(self) -> None:
+    def _activate_runtime(self, runtime: KnowledgeBaseRuntime) -> None:
+        """
+        将指定知识库运行时映射到系统当前使用的模块属性
+        Args:
+            runtime: 知识库运行时
+        """
+        self._active_runtime_key = runtime.scope.runtime_cache_key
+        self.data_module = runtime.data_module
+        self.index_module = runtime.index_module
+        self.generation_module = runtime.generation_module
+        self.knowledge_query_engine = runtime.knowledge_query_engine
+        self.auto_merge_retriever = runtime.auto_merge_retriever
+        self.hybrid_retriever = runtime.hybrid_retriever
+        self.summary_index = runtime.summary_index
+        self.router_engine = runtime.router_engine
+
+    def _active_runtime(self, knowledge_base_id: str | None = None) -> Optional[KnowledgeBaseRuntime]:
+        """
+        获取当前或指定知识库的运行时
+        Args:
+            knowledge_base_id: 可选知识库 ID
+        Returns:
+            命中的运行时，不存在时返回 None
+        """
+        if knowledge_base_id is not None:
+            scope = self.knowledge_base_scope(knowledge_base_id)
+            return getattr(self, "kb_runtimes", {}).get(scope.runtime_cache_key)
+        if getattr(self, "_active_runtime_key", None) is None:
+            return None
+        return getattr(self, "kb_runtimes", {}).get(self._active_runtime_key)
+
+    def _adopt_current_runtime(self, scope: KnowledgeBaseScope) -> Optional[KnowledgeBaseRuntime]:
+        """
+        将当前系统模块映射为指定知识库运行时
+        Args:
+            scope: 知识库作用域
+        Returns:
+            新建或命中的知识库运行时；模块不完整时返回 None
+        """
+        if self.data_module is None or self.index_module is None or self.generation_module is None:
+            return None
+        if getattr(self, "kb_runtimes", None) is None:
+            self.kb_runtimes = {}
+        runtime = KnowledgeBaseRuntime(
+            scope=scope,
+            data_module=self.data_module,
+            index_module=self.index_module,
+            generation_module=self.generation_module,
+            knowledge_query_engine=getattr(self, "knowledge_query_engine", None),
+            auto_merge_retriever=getattr(self, "auto_merge_retriever", None),
+            hybrid_retriever=getattr(self, "hybrid_retriever", None),
+            summary_index=getattr(self, "summary_index", None),
+            router_engine=getattr(self, "router_engine", None),
+        )
+        self.kb_runtimes[scope.runtime_cache_key] = runtime
+        # 激活新创建的运行时
+        self._activate_runtime(runtime)
+        return runtime
+
+    def _ensure_modules(self, knowledge_base_id: str | None = None) -> None:
         """
         确保核心模块已初始化，并同步最新文档注册表引用
+        Args:
+            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
         Returns:
             无返回值
         """
-        if self.data_module is None or self.index_module is None or self.generation_module is None:
-            self.initialize_system()
+        scope = self.knowledge_base_scope(knowledge_base_id or self.config.knowledge_base_id)
+        runtime = getattr(self, "kb_runtimes", {}).get(scope.runtime_cache_key)
+        # 如果运行时不存在，尝试映射当前系统模块为指定知识库运行时
+        if runtime is None:
+            runtime = self._adopt_current_runtime(scope)
+        # 如果运行时或其模块为空，说明系统模块未初始化，需要重新初始化
+        if runtime is None or runtime.data_module is None or runtime.index_module is None or runtime.generation_module is None:
+            self.initialize_system(scope.knowledge_base_id)
+            runtime = getattr(self, "kb_runtimes", {}).get(scope.runtime_cache_key)
+        # 如果运行时存在，激活该运行时的模块
+        if runtime is not None:
+            self._activate_runtime(runtime)
         # 断言模块已初始化，否则抛出异常
         assert self.data_module is not None
         # 同步文档注册表引用，确保最新状态被使用
@@ -416,9 +513,13 @@ class FinRAGSystem:
             校验后的知识库 ID
         """
         scope = self.knowledge_base_scope(knowledge_base_id)
+        runtime = getattr(self, "kb_runtimes", {}).get(scope.runtime_cache_key)
+        if runtime is not None:
+            self._activate_runtime(runtime)
         if self.data_module is not None:
             self.data_module.knowledge_base_id = scope.knowledge_base_id
         if self.index_module is not None:
+            self.index_module.collection_name = scope.collection_name
             # 获取稀疏向量函数实例
             sparse_embedding = getattr(self.index_module, "sparse_embedding_function", None)
             # 如果稀疏向量函数支持设置知识库 ID，则调用设置方法
@@ -458,7 +559,7 @@ class FinRAGSystem:
         Returns:
             无返回值
         """
-        self._ensure_modules()
+        self._ensure_modules(knowledge_base_id)
         assert self.data_module is not None
         assert self.index_module is not None
         # 将数据模块和稀疏向量函数切换到指定知识库上下文
@@ -490,7 +591,7 @@ class FinRAGSystem:
             # 保存空清单
             self.index_module.save_manifest(self._build_expected_manifest(knowledge_base_id))
             # 刷新检索
-            self._refresh_retrieval(vector_index, [])
+            self._refresh_retrieval(vector_index, [], knowledge_base_id)
             return
 
         leaf_nodes = self._rebuild_via_pipeline(knowledge_base_id, sync_source_registry=sync_source_registry)
@@ -511,7 +612,7 @@ class FinRAGSystem:
             # 如果没有叶子节点，清空索引
             vector_index = self.index_module.clear_index(storage_context=self.data_module.storage_context)
         # 刷新检索结果
-        self._refresh_retrieval(vector_index, leaf_nodes or [])
+        self._refresh_retrieval(vector_index, leaf_nodes or [], knowledge_base_id)
 
     def _rebuild_via_pipeline(self, knowledge_base_id: str, *, sync_source_registry: bool = False) -> list:
         """
@@ -653,7 +754,7 @@ class FinRAGSystem:
         """
         确保增量索引状态与当前文档注册表一致
         """
-        self._ensure_modules()
+        self._ensure_modules(knowledge_base_id)
         assert self.data_module is not None
         assert self.index_module is not None
         # 切换到指定知识库上下文
@@ -679,7 +780,7 @@ class FinRAGSystem:
         # 保存当前索引状态
         self.index_module.save_manifest(self._build_expected_manifest(knowledge_base_id))
         if vector_index is not None:
-            self._refresh_retrieval(vector_index, leaf_nodes)
+            self._refresh_retrieval(vector_index, leaf_nodes, knowledge_base_id)
 
     def _index_document_locked(self, document_id: str, *, retire_replacements: bool) -> dict:
         """
@@ -690,13 +791,12 @@ class FinRAGSystem:
         Returns:
             公开文档记录
         """
-        # 确保模块已初始化
-        self._ensure_modules()
-        assert self.data_module is not None
-        assert self.index_module is not None
-        
         # 获取文档记录
         record = self.document_registry.get(document_id)
+        # 确保该文档所属知识库的模块已初始化
+        self._ensure_modules(record.knowledge_base_id)
+        assert self.data_module is not None
+        assert self.index_module is not None
         # 切换到指定知识库上下文
         knowledge_base_id = self._configure_knowledge_base_scope_locked(record.knowledge_base_id)
         # 解析文档内容，生成节点
@@ -808,7 +908,7 @@ class FinRAGSystem:
         # 保存索引清单
         self.index_module.save_manifest(manifest)
         # 刷新检索引擎
-        self._refresh_retrieval(vector_index, leaf_nodes)
+        self._refresh_retrieval(vector_index, leaf_nodes, knowledge_base_id)
         return vector_index
 
     def _retire_replaced_documents_locked(self, indexed_record: Any) -> None:
@@ -840,23 +940,34 @@ class FinRAGSystem:
         # 刷新检索状态
         self._reload_from_store_and_refresh_locked(indexed_record.knowledge_base_id)
 
-    def _refresh_retrieval(self, vector_index: Any, leaf_nodes: List[TextNode]) -> None:
+    def _refresh_retrieval(self, vector_index: Any, leaf_nodes: List[TextNode], knowledge_base_id: str) -> None:
         """
         用当前向量索引和叶子节点重建全部 LlamaIndex 检索和查询引擎
         Args:
             vector_index: 向量索引对象
             leaf_nodes: 叶子节点列表
+            knowledge_base_id: 知识库 ID
         Returns:
             无返回值
         """
         assert self.data_module is not None
+        scope = self.knowledge_base_scope(knowledge_base_id)
+        runtime = getattr(self, "kb_runtimes", {}).get(scope.runtime_cache_key)
         # 如果没有叶子节点，清空所有检索器和引擎
         if not leaf_nodes:
-            self.hybrid_retriever = None
-            self.auto_merge_retriever = None
-            self.knowledge_query_engine = None
-            self.summary_index = None
-            self.router_engine = None
+            if runtime is not None:
+                runtime.hybrid_retriever = None
+                runtime.auto_merge_retriever = None
+                runtime.knowledge_query_engine = None
+                runtime.summary_index = None
+                runtime.router_engine = None
+                self._activate_runtime(runtime)
+            else:
+                self.hybrid_retriever = None
+                self.auto_merge_retriever = None
+                self.knowledge_query_engine = None
+                self.summary_index = None
+                self.router_engine = None
             return
         # 从数据模块获取所有文档
         documents = getattr(self.data_module, "documents", None)
@@ -872,12 +983,21 @@ class FinRAGSystem:
             documents=list(documents) if documents else None, # 文档列表
             embed_model=embed_model, # 嵌入模型
         )
-        self.hybrid_retriever = engines.hybrid_retriever
-        self.auto_merge_retriever = engines.auto_merge_retriever
-        self.summary_index = engines.summary_index
-        self.knowledge_query_engine = engines.knowledge_query_engine
         llm = getattr(self.generation_module, "llm", None) if self.generation_module is not None else None
-        self.router_engine = build_top_router(system=self, llm=llm)
+        router_engine = build_top_router(system=self, llm=llm, knowledge_base_id=scope.knowledge_base_id)
+        if runtime is not None:
+            runtime.hybrid_retriever = engines.hybrid_retriever
+            runtime.auto_merge_retriever = engines.auto_merge_retriever
+            runtime.summary_index = engines.summary_index
+            runtime.knowledge_query_engine = engines.knowledge_query_engine
+            runtime.router_engine = router_engine
+            self._activate_runtime(runtime)
+        else:
+            self.hybrid_retriever = engines.hybrid_retriever
+            self.auto_merge_retriever = engines.auto_merge_retriever
+            self.summary_index = engines.summary_index
+            self.knowledge_query_engine = engines.knowledge_query_engine
+            self.router_engine = router_engine
 
     def _public_document(self, document_id: str) -> dict:
         """

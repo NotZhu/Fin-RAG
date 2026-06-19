@@ -6,6 +6,7 @@ from llama_index.core.schema import NodeWithScore, TextNode
 
 from finrag.core.config import RAGConfig
 from finrag.application.system import FinRAGSystem
+import finrag.application.system as system_module
 
 
 class FakeGeneration:
@@ -66,7 +67,7 @@ def _setup_knowledge_system(tmp_path, engine, generation=None):
     system.data_module = SimpleNamespace()
     system.index_module = SimpleNamespace()
 
-    def noop_ensure():
+    def noop_ensure(knowledge_base_id=None):
         pass
 
     system.ensure_knowledge_base_ready = noop_ensure
@@ -308,3 +309,40 @@ def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
         event["type"] == "pipeline_step" and event["id"] == "router" and event["status"] == "error"
         for event in events
     )
+
+
+def test_ask_question_does_not_fallback_to_another_knowledge_base_runtime(tmp_path):
+    finance_engine = FakeRouterEngine([], answer="finance answer")
+    system = FinRAGSystem.__new__(FinRAGSystem)
+    system.config = RAGConfig(data_path=str(tmp_path), milvus_collection="finrag_leaf_nodes")
+    system.qa_pipeline = system_module.QAPipelineService(system)
+    system.reranker = None
+    system.kb_runtimes = {
+        "finance": system_module.KnowledgeBaseRuntime(
+            scope=system.knowledge_base_scope("finance"),
+            data_module=SimpleNamespace(),
+            index_module=SimpleNamespace(),
+            generation_module=FakeGeneration(),
+            router_engine=finance_engine,
+        ),
+        "risk": system_module.KnowledgeBaseRuntime(
+            scope=system.knowledge_base_scope("risk"),
+            data_module=SimpleNamespace(),
+            index_module=SimpleNamespace(),
+            generation_module=FakeGeneration(),
+            router_engine=None,
+        ),
+    }
+    system.ensure_knowledge_base_ready = lambda knowledge_base_id=None: system._activate_runtime(
+        system.kb_runtimes[knowledge_base_id or system.config.knowledge_base_id]
+    )
+
+    response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="risk", return_trace=True)
+
+    assert finance_engine.calls == []
+    assert "知识库当前不可用" in response.answer
+    assert response.trace is not None
+    assert response.trace.filters == {
+        "knowledge_base_id": "risk",
+        "collection": "finrag_leaf_nodes__kb_risk",
+    }

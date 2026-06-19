@@ -208,7 +208,14 @@ class RAGService:
         Returns:
             完整的 FinRAGResponse 问答结果
         """
-        return self.ensure_knowledge_base_ready().ask_question(
+        system = self.get_system()
+        try:
+            system.ensure_knowledge_base_ready(request.knowledge_base_id)
+        except Exception as exc:
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
+            raise
+        self._last_error = None
+        return system.ask_question(
             request.question, # 问答请求
             return_sources=request.return_sources, # 是否返回来源文档
             return_trace=request.return_trace, # 是否返回详细跟踪信息

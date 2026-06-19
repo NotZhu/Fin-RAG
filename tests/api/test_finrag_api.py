@@ -39,7 +39,7 @@ class FakeFinRAGSystem:
     def build_knowledge_base(self):
         return None
 
-    def ensure_knowledge_base_ready(self):
+    def ensure_knowledge_base_ready(self, knowledge_base_id=None):
         return None
 
     def ready(self):

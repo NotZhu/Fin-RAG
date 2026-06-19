@@ -228,6 +228,72 @@ def test_knowledge_base_initialization_always_passes_document_registry(monkeypat
     assert captured["document_registry"] is registry
 
 
+def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_path):
+    captured = {}
+    registry = SimpleNamespace(records={})
+
+    class FakeDataPreparationModule:
+        def __init__(self, data_path, *, knowledge_base_id=None, document_registry=None, docstore=None, **kwargs):
+            self.data_path = data_path
+            self.knowledge_base_id = knowledge_base_id
+            self.document_registry = document_registry
+            self.docstore = docstore
+
+    class FakeIndexConstructionModule:
+        def __init__(self, **kwargs):
+            captured["collection_name"] = kwargs["collection_name"]
+            captured["sparse_knowledge_base_id"] = kwargs["sparse_embedding_function"].knowledge_base_id
+            self.collection_name = kwargs["collection_name"]
+            self.sparse_embedding_function = kwargs["sparse_embedding_function"]
+
+    class FakeGenerationIntegrationModule:
+        llm = object()
+
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(knowledge_base_module, "DataPreparationModule", FakeDataPreparationModule)
+    monkeypatch.setattr(knowledge_base_module, "IndexConstructionModule", FakeIndexConstructionModule)
+    monkeypatch.setattr(knowledge_base_module, "GenerationIntegrationModule", FakeGenerationIntegrationModule)
+
+    config = SimpleNamespace(
+        data_path=str(tmp_path),
+        knowledge_base_id="finance",
+        chunk_size=300,
+        chunk_overlap=60,
+        embedding_model="text-embedding-v4",
+        milvus_collection="finrag_leaf_nodes",
+        milvus_host="localhost",
+        milvus_port=19530,
+        rrf_k=60,
+        llm_model="qwen",
+        temperature=0.1,
+        max_tokens=512,
+    )
+    system = SimpleNamespace(
+        config=config,
+        document_registry=registry,
+        llama_docstore=object(),
+        bm25_store=object(),
+        manifest_store=object(),
+        kb_runtimes={},
+        knowledge_base_scope=lambda knowledge_base_id: KnowledgeBaseScope.from_config(config, knowledge_base_id),
+    )
+
+    KnowledgeBaseService(system).initialize_system("risk")
+
+    runtime = system.kb_runtimes["risk"]
+    assert runtime.scope.collection_name == "finrag_leaf_nodes__kb_risk"
+    assert runtime.data_module.knowledge_base_id == "risk"
+    assert runtime.index_module.collection_name == "finrag_leaf_nodes__kb_risk"
+    assert runtime.generation_module.llm is not None
+    assert captured == {
+        "collection_name": "finrag_leaf_nodes__kb_risk",
+        "sparse_knowledge_base_id": "risk",
+    }
+    assert system.index_module is runtime.index_module
+
+
 def test_build_knowledge_base_assumes_registry_management(tmp_path):
     calls = []
 
@@ -243,11 +309,13 @@ def test_build_knowledge_base_assumes_registry_management(tmp_path):
         config=SimpleNamespace(data_path=str(tmp_path), knowledge_base_id="kb-finance"),
         data_module=SimpleNamespace(storage_context=None),
         index_module=SimpleNamespace(load_index=lambda *args, **kwargs: None, manifest_matches=lambda m: False),
-        _ensure_modules=lambda: None,
+        _ensure_modules=lambda knowledge_base_id=None: None,
         _configure_knowledge_base_scope_locked=lambda knowledge_base_id: knowledge_base_id,
         _build_expected_manifest=lambda knowledge_base_id: {"schema_version": 1},
         _load_leaf_nodes_from_docstore=lambda knowledge_base_id: [],
-        _refresh_retrieval=lambda vector_index, leaf_nodes: calls.append(("refresh", vector_index, leaf_nodes)),
+        _refresh_retrieval=lambda vector_index, leaf_nodes, knowledge_base_id: calls.append(
+            ("refresh", vector_index, leaf_nodes, knowledge_base_id)
+        ),
         _full_rebuild_locked=lambda knowledge_base_id: calls.append(("rebuild", knowledge_base_id)),
     )
 
@@ -263,7 +331,11 @@ def test_load_leaf_nodes_from_docstore_returns_only_leaf_nodes():
     system = FinRAGSystem.__new__(FinRAGSystem)
     system.llama_docstore = SimpleNamespace(load_all_nodes=lambda knowledge_base_id: all_nodes)
     system.index_module = SimpleNamespace(sparse_embedding_function=None)
-    system.knowledge_base_scope = lambda knowledge_base_id: SimpleNamespace(knowledge_base_id=knowledge_base_id)
+    system.knowledge_base_scope = lambda knowledge_base_id: SimpleNamespace(
+        knowledge_base_id=knowledge_base_id,
+        runtime_cache_key=knowledge_base_id,
+        collection_name="collection",
+    )
 
     def load_prepared_nodes(nodes):
         captured["nodes"] = nodes

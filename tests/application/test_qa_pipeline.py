@@ -1,16 +1,16 @@
 from types import SimpleNamespace
 
+from finrag.application.knowledge_base_scope import KnowledgeBaseScope
 from finrag.application.qa_pipeline import QAPipelineService
+from finrag.core.config import RAGConfig
 
 
 def _system_without_router(default_knowledge_base_id: str = "kb-config-default"):
+    config = RAGConfig(knowledge_base_id=default_knowledge_base_id, milvus_collection="finrag_leaf_nodes")
     return SimpleNamespace(
-        config=SimpleNamespace(
-            knowledge_base_id=default_knowledge_base_id,
-            retrieval_strategy="llamaindex_router",
-            auto_merge_ratio_threshold=0.5,
-        ),
+        config=config,
         router_engine=None,
+        knowledge_base_scope=lambda knowledge_base_id: KnowledgeBaseScope.from_config(config, knowledge_base_id),
     )
 
 
@@ -29,7 +29,10 @@ def test_knowledge_unavailable_trace_records_effective_knowledge_base_id(
     assert response.route_type == "knowledge"
     assert response.trace is not None
     assert response.trace.final_decision == "knowledge_unavailable"
-    assert response.trace.filters == {"knowledge_base_id": "kb-risk"}
+    assert response.trace.filters == {
+        "knowledge_base_id": "kb-risk",
+        "collection": "finrag_leaf_nodes__kb_kb_risk",
+    }
     assert response.trace.pipeline_steps[-1]["id"] == "router"
     assert response.trace.pipeline_steps[-1]["status"] == "error"
     assert any(event["type"] == "error" for event in emitted_events)
