@@ -184,10 +184,9 @@ def test_document_upload_list_delete_and_ask_api(tmp_path):
 
     with client.stream(
         "POST",
-        "/ask",
+        "/knowledge-bases/kb-finance/ask",
         json={
             "question": "客户风险等级如何匹配？",
-            "knowledge_base_id": "kb-finance",
             "return_sources": True,
             "return_trace": True,
         },
@@ -354,10 +353,9 @@ def test_ask_ignores_removed_retrieval_strategy_field(tmp_path):
 
     with client.stream(
         "POST",
-        "/ask",
+        "/knowledge-bases/finance/ask",
         json={
             "question": "客户风险等级如何匹配？",
-            "knowledge_base_id": "finance",
             "retrieval_strategy": "unknown",
         },
     ) as response:

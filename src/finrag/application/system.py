@@ -174,14 +174,30 @@ class FinRAGSystem:
             return self.knowledge_base.rebuild_from_sources()
         return self.knowledge_base.rebuild_from_sources(knowledge_base_id)
 
-    def ready(self) -> dict:
+    def ready(self, knowledge_base_id: str | None = None) -> dict:
         """
         返回系统是否完成检索模块初始化及当前资料库统计
+        Args:
+            knowledge_base_id: 可选知识库 ID，提供时返回该知识库的运行时和文档统计
         Returns:
             包含 ready、status、文档数和节点数的状态字典
         """
-        stats = self.get_statistics()
-        retrieval_ready = self.knowledge_query_engine is not None
+        if knowledge_base_id is None:
+            stats = self.get_statistics()
+            retrieval_ready = self.knowledge_query_engine is not None
+        else:
+            scope = self.knowledge_base_scope(knowledge_base_id)
+            runtime = self._active_runtime(scope.knowledge_base_id)
+            documents = self.document_registry.list_public(scope.knowledge_base_id)
+            stats = {
+                "total_documents": len(documents),
+                "total_chunks": sum(int(document.get("chunk_count") or 0) for document in documents),
+            }
+            retrieval_ready = (
+                runtime is not None
+                and runtime.knowledge_query_engine is not None
+                and runtime.data_module is not None
+            )
         return {
             "ready": retrieval_ready,
             "status": "ready" if retrieval_ready else "not_ready",

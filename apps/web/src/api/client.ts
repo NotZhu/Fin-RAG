@@ -4,6 +4,8 @@ import type {
   AskStreamEvent,
   DocumentRecord,
   DocumentsResponse,
+  KnowledgeBaseRecord,
+  KnowledgeBasesResponse,
   ReadyResponse,
 } from "../types/api";
 
@@ -13,6 +15,8 @@ export type {
   AskStreamEvent,
   DocumentRecord,
   DocumentsResponse,
+  KnowledgeBaseRecord,
+  KnowledgeBasesResponse,
   PipelineStep,
   ReadyResponse,
 } from "../types/api";
@@ -37,16 +41,39 @@ async function fetchJson<T>(
   return (await response.json()) as T;
 }
 
-export async function getReady(): Promise<ReadyResponse> {
-  return fetchJson<ReadyResponse>("/ready");
+export async function warmupKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<ReadyResponse> {
+  return fetchJson<ReadyResponse>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/warmup`,
+    { method: "POST" },
+  );
 }
 
-export async function warmupKnowledgeBase(): Promise<ReadyResponse> {
-  return fetchJson<ReadyResponse>("/warmup", { method: "POST" });
+export async function getKnowledgeBaseReady(
+  knowledgeBaseId: string,
+): Promise<ReadyResponse> {
+  return fetchJson<ReadyResponse>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/ready`,
+  );
+}
+
+export async function listKnowledgeBases(): Promise<KnowledgeBasesResponse> {
+  return fetchJson<KnowledgeBasesResponse>("/knowledge-bases");
+}
+
+export async function createKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<KnowledgeBaseRecord> {
+  return fetchJson<KnowledgeBaseRecord>("/knowledge-bases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ knowledge_base_id: knowledgeBaseId }),
+  });
 }
 
 export async function listDocuments(
-  knowledgeBaseId = "finance",
+  knowledgeBaseId: string,
 ): Promise<DocumentsResponse> {
   return fetchJson<DocumentsResponse>(
     `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents`,
@@ -69,7 +96,7 @@ export async function uploadDocument(
 
 export async function reindexDocument(
   documentId: string,
-  knowledgeBaseId = "finance",
+  knowledgeBaseId: string,
 ): Promise<DocumentRecord> {
   return fetchJson<DocumentRecord>(
     `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents/${encodeURIComponent(documentId)}/reindex`,
@@ -79,7 +106,7 @@ export async function reindexDocument(
 
 export async function deleteDocument(
   documentId: string,
-  knowledgeBaseId = "finance",
+  knowledgeBaseId: string,
 ): Promise<DocumentRecord> {
   return fetchJson<DocumentRecord>(
     `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents/${encodeURIComponent(documentId)}`,
@@ -95,21 +122,23 @@ type AskStreamOptions = {
 export async function askQuestionStream(
   question: string,
   returnTrace: boolean,
-  knowledgeBaseId = "finance",
+  knowledgeBaseId: string,
   options: AskStreamOptions = {},
 ) {
   const startTime = performance.now();
-  const response = await fetch("/ask", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: options.signal,
-    body: JSON.stringify({
-      question,
-      knowledge_base_id: knowledgeBaseId,
-      return_sources: true,
-      return_trace: returnTrace,
-    }),
-  });
+  const response = await fetch(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/ask`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: options.signal,
+      body: JSON.stringify({
+        question,
+        return_sources: true,
+        return_trace: returnTrace,
+      }),
+    },
+  );
 
   if (!response.ok) {
     throw await readError(response);

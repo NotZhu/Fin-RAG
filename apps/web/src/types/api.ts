@@ -17,6 +17,17 @@ export type DocumentRecord = {
   last_error: string | null;
 };
 
+export type KnowledgeBaseRecord = {
+  knowledge_base_id: string;
+  document_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeBasesResponse = {
+  knowledge_bases: KnowledgeBaseRecord[];
+};
+
 export type DocumentsResponse = {
   documents: DocumentRecord[];
 };

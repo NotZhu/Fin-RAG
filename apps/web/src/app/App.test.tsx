@@ -15,6 +15,23 @@ const readyPayload = {
   last_error: null,
 };
 
+const knowledgeBasesPayload = {
+  knowledge_bases: [
+    {
+      knowledge_base_id: "finance",
+      document_count: 1,
+      created_at: "2026-06-18T00:00:00+00:00",
+      updated_at: "2026-06-18T00:00:00+00:00",
+    },
+    {
+      knowledge_base_id: "risk",
+      document_count: 0,
+      created_at: "2026-06-18T00:01:00+00:00",
+      updated_at: "2026-06-18T00:01:00+00:00",
+    },
+  ],
+};
+
 const documentsPayload = {
   documents: [
     {
@@ -69,6 +86,12 @@ const answerPayload = {
   },
 };
 
+function jsonResponse(payload: unknown) {
+  return new Response(JSON.stringify(payload), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function sseResponse(chunks: string[], headers: Record<string, string> = {}) {
   const encoder = new TextEncoder();
   return new Response(
@@ -102,16 +125,10 @@ function deferredResponse() {
 function mockInitialLoad() {
   return vi
     .spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify(readyPayload), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    )
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify(documentsPayload), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    .mockResolvedValueOnce(jsonResponse(knowledgeBasesPayload))
+    .mockResolvedValueOnce(jsonResponse(readyPayload))
+    .mockResolvedValueOnce(jsonResponse(documentsPayload))
+    .mockResolvedValueOnce(jsonResponse(readyPayload));
 }
 
 afterEach(() => {
@@ -119,6 +136,70 @@ afterEach(() => {
 });
 
 describe("FinRAG chat interface", () => {
+  test("shows a disabled knowledge base loading state during initial load", () => {
+    const knowledgeBaseRequest = deferredResponse();
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(
+      () => knowledgeBaseRequest.promise,
+    );
+
+    render(<App />);
+
+    const loadingButton = screen.getByRole("button", {
+      name: "知识库加载中",
+    });
+    expect(loadingButton).toBeDisabled();
+    expect(loadingButton).toHaveTextContent("加载中");
+    expect(
+      screen.queryByRole("listbox", { name: "知识库列表" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("shows knowledge base load failure and retries from the switcher", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(readyPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(documentsPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(readyPayload));
+
+    const { container } = render(<App />);
+
+    const retryButton = await screen.findByRole("button", {
+      name: "重新加载知识库",
+    });
+    expect(retryButton).toHaveTextContent("加载失败");
+
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    const stats = container.querySelector(".kb-stats") as HTMLElement;
+    expect(within(stats).getByText("加载失败")).toHaveClass("kb-stat-value");
+    expect(within(stats).queryByText("Finance")).not.toBeInTheDocument();
+    expect(within(stats).getByText("更新")).toHaveClass("kb-stat-label");
+    expect(within(stats).queryByText("-")).not.toBeInTheDocument();
+
+    await userEvent.click(retryButton);
+
+    expect(
+      await screen.findByRole("button", { name: "切换知识库 finance" }),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([url]) => url === "/knowledge-bases"),
+    ).toHaveLength(2);
+  });
+
   test("uses a sparse ChatGPT-like layout with a collapsible sidebar", async () => {
     mockInitialLoad();
 
@@ -138,6 +219,26 @@ describe("FinRAG chat interface", () => {
     expect(appStyles).toContain(".chat-panel.is-empty");
     expect(appStyles).toContain(".chat-composer-form.is-floating");
     expect(appStyles).toContain(".chat-composer-form.is-docked");
+    expect(appStyles).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
+    expect(appStyles).toContain("justify-self: center;");
+    expect(appStyles).toContain("--kb-switch-width: 112px;");
+    expect(appStyles).toContain("--kb-switch-height: 28px;");
+    expect(appStyles).toContain("border-radius: 8px;");
+    expect(appStyles).toContain("height: var(--kb-switch-height);");
+    expect(appStyles).toContain("width: var(--kb-switch-width);");
+    expect(appStyles).toContain("color: var(--muted);");
+    expect(appStyles).toContain("justify-content: center;");
+    expect(appStyles).toContain("position: absolute;");
+    expect(appStyles).toContain("padding-left: 1px;");
+    expect(appStyles).toContain("justify-self: start;");
+    expect(appStyles).toContain(".kb-stat-label");
+    expect(appStyles).toContain(".kb-stat-value");
+    expect(appStyles).toContain(".kb-stat-item svg");
+    expect(appStyles).toContain(".kb-stat-divider");
+    expect(appStyles).toMatch(/\.kb-stat-label\s*\{[^}]*color: var\(--text\);/s);
+    expect(appStyles).toMatch(/\.kb-stat-value\s*\{[^}]*color: var\(--muted\);/s);
+    expect(appStyles).toMatch(/\.kb-stat-item svg\s*\{[^}]*color: var\(--text\);/s);
+    expect(appStyles).toMatch(/\.kb-stat-divider\s*\{[^}]*color: var\(--text\);/s);
     expect(appStyles).not.toContain("color-scheme: dark;");
     expect(appStyles).not.toContain('[data-theme="dark"]');
 
@@ -156,6 +257,11 @@ describe("FinRAG chat interface", () => {
       within(sidebar).getByRole("region", { name: "实时检索链路" }),
     ).toHaveClass("rail-card");
     expect(within(chat).getByText("文档就绪，随时提问")).toBeInTheDocument();
+    const kbSwitchButton = within(sidebar).getByRole("button", {
+      name: "切换知识库 finance",
+    });
+    expect(kbSwitchButton).toHaveClass("kb-switch-button");
+    expect(kbSwitchButton.querySelectorAll("svg")).toHaveLength(1);
     const emptyComposerForm = within(chat)
       .getByPlaceholderText("查询文档信息、定位条款、总结内容")
       .closest("form");
@@ -171,6 +277,18 @@ describe("FinRAG chat interface", () => {
     expect(
       screen.getByRole("button", { name: "展开侧栏" }),
     ).toBeInTheDocument();
+  });
+
+  test("loads ready state through the selected knowledge base scope", async () => {
+    const fetchMock = mockInitialLoad();
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+
+    const requestedUrls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(requestedUrls).toContain("/knowledge-bases/finance/ready");
+    expect(requestedUrls).not.toContain("/ready");
   });
 
   test("has no theme toggle button", async () => {
@@ -234,6 +352,11 @@ describe("FinRAG chat interface", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
         }),
@@ -243,6 +366,7 @@ describe("FinRAG chat interface", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
       .mockImplementationOnce(() => uploadRequest.promise)
       .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
@@ -265,20 +389,13 @@ describe("FinRAG chat interface", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "确认索引文档" });
     expect(within(dialog).getByLabelText("policy.md")).toBeInTheDocument();
-    expect(within(dialog).getByRole("textbox", { name: "知识库" })).toHaveValue(
-      "finance",
-    );
+    expect(
+      within(dialog).queryByRole("textbox", { name: "知识库" }),
+    ).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "索引" })).toHaveClass(
       "modal-action-button",
     );
 
-    await userEvent.clear(
-      within(dialog).getByRole("textbox", { name: "知识库" }),
-    );
-    await userEvent.type(
-      within(dialog).getByRole("textbox", { name: "知识库" }),
-      "kb-credit",
-    );
     await userEvent.click(within(dialog).getByRole("button", { name: "索引" }));
 
     await waitFor(() => {
@@ -288,12 +405,12 @@ describe("FinRAG chat interface", () => {
     });
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/knowledge-bases/kb-credit/documents/upload",
+        "/knowledge-bases/finance/documents/upload",
         expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
       );
     });
     const uploadCall = fetchMock.mock.calls.find(
-      ([url]) => url === "/knowledge-bases/kb-credit/documents/upload",
+      ([url]) => url === "/knowledge-bases/finance/documents/upload",
     );
     expect(
       ((uploadCall?.[1] as RequestInit).body as FormData).get(
@@ -320,8 +437,65 @@ describe("FinRAG chat interface", () => {
     );
   });
 
-  test("submits a question from the compact composer and renders answer, sources, and timeline without latency text", async () => {
-    vi.spyOn(globalThis, "fetch")
+  test("switches knowledge base from the sidebar dropdown and refreshes documents", async () => {
+    const riskDocumentsPayload = {
+      documents: [
+        {
+          document_id: "doc-risk",
+          filename: "风险制度.md",
+          file_type: "md",
+          knowledge_base_id: "risk",
+          status: "indexed",
+          chunk_count: 2,
+          upload_time: "2026-06-18T08:00:00.000000+00:00",
+          last_error: null,
+        },
+      ],
+    };
+    const fetchMock = mockInitialLoad().mockResolvedValueOnce(
+      new Response(JSON.stringify(riskDocumentsPayload), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    ).mockResolvedValueOnce(jsonResponse(readyPayload));
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: "切换知识库 finance" }));
+    await userEvent.click(screen.getByRole("option", { name: "risk" }));
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    expect(await screen.findByText("风险制度.md")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换知识库 risk" })).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) => url === "/knowledge-bases/risk/documents",
+      ),
+    ).toBe(true);
+  });
+
+  test("warms the selected knowledge base after initial load and switch", async () => {
+    const riskDocumentsPayload = {
+      documents: [
+        {
+          document_id: "doc-risk",
+          filename: "风险制度.md",
+          file_type: "md",
+          knowledge_base_id: "risk",
+          status: "indexed",
+          chunk_count: 2,
+          upload_time: "2026-06-18T08:00:00.000000+00:00",
+          last_error: null,
+        },
+      ],
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
@@ -332,6 +506,227 @@ describe("FinRAG chat interface", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(readyPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(riskDocumentsPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(readyPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/knowledge-bases/finance/warmup",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "切换知识库 finance" }),
+    );
+    await userEvent.click(screen.getByRole("option", { name: "risk" }));
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    expect(await screen.findByText("风险制度.md")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/knowledge-bases/risk/warmup",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  test("manually warms the current knowledge base from the documents toolbar", async () => {
+    const fetchMock = mockInitialLoad()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...readyPayload,
+          total_documents: 1,
+          total_chunks: 9,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          documents: [
+            {
+              ...documentsPayload.documents[0],
+              chunk_count: 9,
+            },
+          ],
+        }),
+      );
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url]) => url === "/knowledge-bases/finance/warmup",
+        ),
+      ).toHaveLength(1);
+    });
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "刷新知识库" }),
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url]) => url === "/knowledge-bases/finance/warmup",
+        ),
+      ).toHaveLength(2);
+    });
+    const stats = document.querySelector(".kb-stats") as HTMLElement;
+    expect(within(stats).getByText("9")).toHaveClass("kb-stat-value");
+  });
+
+  test("closes the knowledge base dropdown when clicking outside it", async () => {
+    mockInitialLoad();
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(
+      screen.getByRole("button", { name: "切换知识库 finance" }),
+    );
+
+    expect(screen.getByRole("listbox", { name: "知识库列表" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "新聊天" }));
+
+    expect(
+      screen.queryByRole("listbox", { name: "知识库列表" }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("creates a knowledge base from the documents page and switches to it", async () => {
+    const creditPayload = {
+      knowledge_base_id: "credit",
+      document_count: 0,
+      created_at: "2026-06-18T00:02:00+00:00",
+      updated_at: "2026-06-18T00:02:00+00:00",
+    };
+    const updatedKnowledgeBases = {
+      knowledge_bases: [...knowledgeBasesPayload.knowledge_bases, creditPayload],
+    };
+    const fetchMock = mockInitialLoad()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(creditPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(updatedKnowledgeBases), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ documents: [] }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(readyPayload));
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+    await userEvent.click(screen.getByRole("button", { name: "新建知识库" }));
+    const dialog = await screen.findByRole("dialog", { name: "新建知识库" });
+    expect(dialog.querySelector(".create-kb-header svg")).toBeNull();
+    expect(within(dialog).queryByText("知识库 ID")).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "知识库 ID" }), "credit");
+    await userEvent.click(within(dialog).getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "切换知识库 credit" })).toBeInTheDocument();
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/knowledge-bases",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ knowledge_base_id: "credit" }),
+      }),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) => url === "/knowledge-bases/credit/documents",
+      ),
+    ).toBe(true);
+  });
+
+  test("asks questions against the selected knowledge base", async () => {
+    let askBody = "";
+    mockInitialLoad()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ documents: [] }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockImplementationOnce((_input, init) => {
+        askBody = String(init?.body ?? "");
+        return Promise.resolve(
+          sseResponse([
+            `event: done\ndata: {"response":${JSON.stringify({
+              ...answerPayload,
+              trace: {
+                ...answerPayload.trace,
+                filters: { knowledge_base_id: "risk" },
+              },
+            })}}\n\n`,
+          ]),
+        );
+      });
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: "切换知识库 finance" }));
+    await userEvent.click(screen.getByRole("option", { name: "risk" }));
+    await userEvent.type(screen.getByLabelText("问题"), "客户风险等级如何匹配？");
+    await userEvent.click(screen.getByRole("button", { name: "提交问题" }));
+
+    await screen.findByText("客户风险等级应与产品风险等级匹配。[1]");
+    expect(JSON.parse(askBody)).toEqual({
+      question: "客户风险等级如何匹配？",
+      return_sources: true,
+      return_trace: true,
+    });
+  });
+
+  test("submits a question from the compact composer and renders answer, sources, and timeline without latency text", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(readyPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(documentsPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
       .mockResolvedValueOnce(
         sseResponse([
           'event: analysis\ndata: {"route_type":"knowledge"}\n\n',
@@ -379,6 +774,11 @@ describe("FinRAG chat interface", () => {
     let askSignal: AbortSignal | undefined;
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
         }),
@@ -388,6 +788,7 @@ describe("FinRAG chat interface", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
       .mockImplementationOnce((_input, init) => {
         askSignal = init?.signal ?? undefined;
         return Promise.resolve(
@@ -425,12 +826,21 @@ describe("FinRAG chat interface", () => {
   test("shows reindex and delete buttons on document cards", async () => {
     mockInitialLoad();
 
-    render(<App />);
+    const { container } = render(<App />);
 
     await screen.findByText("文档就绪，随时提问");
 
     await userEvent.click(screen.getByRole("button", { name: /文档/ }));
 
+    const stats = container.querySelector(".kb-stats") as HTMLElement;
+    expect(within(stats).getByText("Finance")).toHaveClass("kb-stat-value");
+    expect(within(stats).getByText("文档")).toHaveClass("kb-stat-label");
+    expect(within(stats).getByText("总分块")).toHaveClass("kb-stat-label");
+    expect(within(stats).getByText("更新")).toHaveClass("kb-stat-label");
+    expect(within(stats).getByText(/2026-06-18/)).toHaveClass("kb-stat-value");
+    expect(within(stats).getByText("1")).toHaveClass("kb-stat-value");
+    expect(within(stats).getByText("3")).toHaveClass("kb-stat-value");
+    expect(within(stats).getAllByText("|")[0]).toHaveClass("kb-stat-divider");
     expect(
       screen.getByRole("button", { name: "重新索引" }),
     ).toBeInTheDocument();
@@ -439,6 +849,11 @@ describe("FinRAG chat interface", () => {
 
   test("new chat button clears the conversation", async () => {
     vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
@@ -449,6 +864,7 @@ describe("FinRAG chat interface", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
       .mockResolvedValueOnce(
         sseResponse([
           `event: done\ndata: {"response":${JSON.stringify(answerPayload)}}\n\n`,
@@ -513,6 +929,11 @@ describe("FinRAG chat interface", () => {
 
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
         }),
@@ -522,6 +943,7 @@ describe("FinRAG chat interface", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
       .mockResolvedValueOnce(
         new Response(JSON.stringify(indexedPayload), {
           headers: { "Content-Type": "application/json" },
@@ -562,6 +984,11 @@ describe("FinRAG chat interface", () => {
 
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
+        new Response(JSON.stringify(knowledgeBasesPayload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify(readyPayload), {
           headers: { "Content-Type": "application/json" },
         }),
@@ -570,7 +997,8 @@ describe("FinRAG chat interface", () => {
         new Response(JSON.stringify(failedPayload), {
           headers: { "Content-Type": "application/json" },
         }),
-      );
+      )
+      .mockResolvedValueOnce(jsonResponse(readyPayload));
 
     render(<App />);
 

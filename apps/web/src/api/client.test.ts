@@ -2,10 +2,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   askQuestionStream,
+  createKnowledgeBase,
   deleteDocument,
+  getKnowledgeBaseReady,
+  listKnowledgeBases,
   listDocuments,
   reindexDocument,
   uploadDocument,
+  warmupKnowledgeBase,
 } from "./client";
 
 function streamResponse(chunks: string[], headers: Record<string, string> = {}) {
@@ -78,8 +82,10 @@ describe("askQuestionStream", () => {
   });
 
   test("does not send retrieval_strategy in ask request body", async () => {
+    let observedInput = "";
     let requestBody = "";
-    vi.spyOn(globalThis, "fetch").mockImplementationOnce((_input, init) => {
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
       requestBody = String(init?.body ?? "");
       return Promise.resolve(
         streamResponse([
@@ -88,11 +94,11 @@ describe("askQuestionStream", () => {
       );
     });
 
-    await askQuestionStream("q", false);
+    await askQuestionStream("q", false, "kb-finance");
 
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/ask");
     expect(JSON.parse(requestBody)).toEqual({
       question: "q",
-      knowledge_base_id: "finance",
       return_sources: true,
       return_trace: false
     });
@@ -120,6 +126,115 @@ describe("uploadDocument", () => {
     expect(submittedBody.get("file")).toBeInstanceOf(File);
     expect(submittedBody.get("knowledge_base_id")).toBeNull();
     expect(submittedBody.get("document_category")).toBeNull();
+  });
+});
+
+describe("knowledge base client", () => {
+  test("gets scoped ready state for a knowledge base", async () => {
+    let observedInput = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input) => {
+      observedInput = String(input);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ready: true,
+            status: "ready",
+            total_documents: 1,
+            total_chunks: 3,
+            last_error: null,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const result = await getKnowledgeBaseReady("kb-finance");
+
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/ready");
+    expect(result.ready).toBe(true);
+  });
+
+  test("warms up a scoped knowledge base", async () => {
+    let observedInput = "";
+    let observedMethod = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
+      observedMethod = String(init?.method ?? "");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ready: true,
+            status: "ready",
+            total_documents: 1,
+            total_chunks: 3,
+            last_error: null,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const result = await warmupKnowledgeBase("kb-finance");
+
+    expect(observedInput).toBe("/knowledge-bases/kb-finance/warmup");
+    expect(observedMethod).toBe("POST");
+    expect(result.ready).toBe(true);
+  });
+
+  test("lists knowledge bases", async () => {
+    let observedInput = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input) => {
+      observedInput = String(input);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            knowledge_bases: [
+              {
+                knowledge_base_id: "finance",
+                document_count: 1,
+                created_at: "2026-06-18T00:00:00+00:00",
+                updated_at: "2026-06-18T00:00:00+00:00",
+              },
+            ],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const result = await listKnowledgeBases();
+
+    expect(observedInput).toBe("/knowledge-bases");
+    expect(result.knowledge_bases[0].knowledge_base_id).toBe("finance");
+  });
+
+  test("creates a knowledge base from the user supplied id", async () => {
+    let observedInput = "";
+    let observedMethod = "";
+    let observedBody = "";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce((input, init) => {
+      observedInput = String(input);
+      observedMethod = String(init?.method ?? "");
+      observedBody = String(init?.body ?? "");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            knowledge_base_id: "risk",
+            document_count: 0,
+            created_at: "2026-06-18T00:01:00+00:00",
+            updated_at: "2026-06-18T00:01:00+00:00",
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+
+    const result = await createKnowledgeBase("risk");
+
+    expect(observedInput).toBe("/knowledge-bases");
+    expect(observedMethod).toBe("POST");
+    expect(JSON.parse(observedBody)).toEqual({ knowledge_base_id: "risk" });
+    expect(result.knowledge_base_id).toBe("risk");
   });
 });
 

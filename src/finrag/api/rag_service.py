@@ -50,9 +50,11 @@ class RAGService:
                     self._last_error = None
         return self._system
 
-    def ensure_knowledge_base_ready(self) -> FinRAGSystem:
+    def ensure_knowledge_base_ready(self, knowledge_base_id: str) -> FinRAGSystem:
         """
         按需初始化检索链路并构建知识库
+        Args:
+            knowledge_base_id: 目标知识库 ID
         Returns:
             已完成检索链路准备的 FinRAGSystem 实例
         """
@@ -60,16 +62,18 @@ class RAGService:
         with self._init_lock:
             try:
                 # 确保系统已初始化
-                system.ensure_knowledge_base_ready()
+                system.ensure_knowledge_base_ready(knowledge_base_id)
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
                 raise
             self._last_error = None
             return system
 
-    def ready(self) -> dict:
+    def ready(self, knowledge_base_id: str | None = None) -> dict:
         """
         返回 RAG 服务就绪状态，未初始化或初始化失败时给出错误信息
+        Args:
+            knowledge_base_id: 可选的目标知识库 ID，提供时返回该知识库的文档统计
         Returns:
             包含 ready、status、文档统计和 last_error 的状态字典
         """
@@ -82,8 +86,8 @@ class RAGService:
                 "total_chunks": 0,
                 "last_error": self._last_error,
             }
-        # 如果系统未初始化，返回 not_ready 状态
-        if self._system is None:
+        # 全局 ready 不主动创建系统；scoped ready 需要读取对应知识库文档列表。
+        if self._system is None and knowledge_base_id is None:
             return {
                 "ready": False,
                 "status": "not_ready",
@@ -91,28 +95,34 @@ class RAGService:
                 "total_chunks": 0,
                 "last_error": None,
             }
-        # 如果系统已初始化，返回就绪状态
-        return self._system.ready()
+        system = self.get_system()
+        if knowledge_base_id is None:
+            return system.ready()
+        return system.ready(knowledge_base_id)
 
-    def warmup(self) -> dict:
+    def warmup(self, knowledge_base_id: str) -> dict:
         """
         主动触发系统初始化，用于服务启动后的预热
+        Args:
+            knowledge_base_id: 目标知识库 ID
         Returns:
             初始化后的 ready 状态
         """
         # 确保系统已初始化
-        self.ensure_knowledge_base_ready()
-        return self.ready()
+        self.ensure_knowledge_base_ready(knowledge_base_id)
+        return self.ready(knowledge_base_id)
 
     async def ask_stream(
         self,
         request: AskRequest,
+        knowledge_base_id: str,
         is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> AsyncIterator[str]:
         """
         以 Server-Sent Events 形式流式执行问答
         Args:
             request: 已通过 Pydantic 校验的问答请求
+            knowledge_base_id: URL 路径中的知识库 ID
             is_disconnected: 可选的客户端断连检测函数
         Yields:
             SSE 文本块
@@ -153,7 +163,13 @@ class RAGService:
             """
             try:
                 # 执行问答流程
-                response = await asyncio.to_thread(self._ask_with_event_sink, request, emit, cancel_event) # 在线程池中运行的函数，传递的参数
+                response = await asyncio.to_thread(
+                    self._ask_with_event_sink,
+                    request,
+                    knowledge_base_id,
+                    emit,
+                    cancel_event,
+                ) # 在线程池中运行的函数，传递的参数
                 # 生成完成事件
                 for event in self._completion_events(response, emitted_event_types):
                     emit(event)
@@ -196,6 +212,7 @@ class RAGService:
     def _ask_with_event_sink(
         self,
         request: AskRequest,
+        knowledge_base_id: str,
         event_sink: Callable[[dict[str, Any]], None],
         cancel_event: threading.Event,
     ) -> FinRAGResponse:
@@ -203,6 +220,7 @@ class RAGService:
         执行带事件回调的问答请求
         Args:
             request: 已通过 Pydantic 校验的问答请求
+            knowledge_base_id: URL 路径中的知识库 ID
             event_sink: 接收问答流程事件的回调函数
             cancel_event: 客户端断连时触发的取消信号
         Returns:
@@ -210,7 +228,7 @@ class RAGService:
         """
         system = self.get_system()
         try:
-            system.ensure_knowledge_base_ready(request.knowledge_base_id)
+            system.ensure_knowledge_base_ready(knowledge_base_id)
         except Exception as exc:
             self._last_error = f"{exc.__class__.__name__}: {exc}"
             raise
@@ -219,7 +237,7 @@ class RAGService:
             request.question, # 问答请求
             return_sources=request.return_sources, # 是否返回来源文档
             return_trace=request.return_trace, # 是否返回详细跟踪信息
-            knowledge_base_id=request.knowledge_base_id, # 关联的知识库ID
+            knowledge_base_id=knowledge_base_id, # 关联的知识库ID
             event_sink=event_sink, # 事件回调函数
             cancel_event=cancel_event, # 客户端断连时触发的取消信号
         )

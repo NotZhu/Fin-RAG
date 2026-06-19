@@ -12,10 +12,17 @@ from finrag.core import FinRAGResponse, RAGTrace, RetrievedSource
 
 class FakeFinRAGSystem:
     def __init__(self):
+        # 初始化次数
         self.initialize_calls = 0
+        # 知识库构建次数
         self.build_calls = 0
+        # 确保知识库就绪次数
         self.ensure_calls = 0
+        # 确保知识库就绪时的参数
+        self.ensure_knowledge_base_ids = []
+        # 问答次数
         self.ask_calls = []
+        self.ready_knowledge_base_ids = []
         self.retrieval_module = None
         self.config = SimpleNamespace(
             knowledge_base_id="kb-config-default",
@@ -32,13 +39,27 @@ class FakeFinRAGSystem:
         self.retrieval_module = object()
 
     def ensure_knowledge_base_ready(self, knowledge_base_id=None):
+        """
+        确保知识库就绪
+        """
         self.ensure_calls += 1
+        self.ensure_knowledge_base_ids.append(knowledge_base_id)
         if self.retrieval_module is not None and self.data_module is not None:
             return
         self.initialize_system()
         self.build_knowledge_base()
 
-    def ready(self):
+    def ready(self, knowledge_base_id=None):
+        self.ready_knowledge_base_ids.append(knowledge_base_id)
+        if knowledge_base_id is not None:
+            documents = self.list_documents(knowledge_base_id)
+            return {
+                "ready": self.retrieval_module is not None,
+                "status": "ready" if self.retrieval_module is not None else "not_ready",
+                "total_documents": len(documents),
+                "total_chunks": sum(int(document.get("chunk_count") or 0) for document in documents),
+                "last_error": None,
+            }
         return {"ready": True, "status": "ready", "total_documents": 2, "total_chunks": 5, "last_error": None}
 
     def list_documents(self, knowledge_base_id: str):
@@ -180,12 +201,13 @@ def test_warmup_initializes_knowledge_base_once_for_concurrent_callers():
 
     service = RAGService(factory)
     with ThreadPoolExecutor(max_workers=4) as executor:
-        systems = list(executor.map(lambda _: service.ensure_knowledge_base_ready(), range(4)))
+        systems = list(executor.map(lambda _: service.ensure_knowledge_base_ready("finance"), range(4)))
 
     assert len(created) == 1
     assert all(system is created[0] for system in systems)
     assert created[0].initialize_calls == 1
     assert created[0].build_calls == 1
+    assert created[0].ensure_knowledge_base_ids == ["finance", "finance", "finance", "finance"]
 
 
 def test_service_delegates_knowledge_ready_check_to_system():
@@ -204,11 +226,82 @@ def test_service_delegates_knowledge_ready_check_to_system():
         return system
 
     service = RAGService(factory)
-    service.ensure_knowledge_base_ready()
+    service.ensure_knowledge_base_ready("finance")
 
     assert created[0].ensure_calls == 1
+    assert created[0].ensure_knowledge_base_ids == ["finance"]
     assert created[0].initialize_calls == 0
     assert created[0].build_calls == 0
+
+
+def test_removed_warmup_route_is_not_registered():
+    client, systems = build_client()
+
+    response = client.post("/warmup")
+
+    assert response.status_code == 404
+    assert systems == []
+
+
+def test_scoped_warmup_initializes_path_knowledge_base():
+    client, systems = build_client()
+
+    response = client.post("/knowledge-bases/risk/warmup")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert systems[0].ensure_calls == 1
+    assert systems[0].ensure_knowledge_base_ids == ["risk"]
+
+
+def test_scoped_ready_reports_path_knowledge_base_state():
+    class ScopedReadySystem(FakeFinRAGSystem):
+        def __init__(self):
+            super().__init__()
+            self.retrieval_module = object()
+            self.documents = [
+                {
+                    "document_id": "doc-finance",
+                    "knowledge_base_id": "finance",
+                    "chunk_count": 2,
+                },
+                {
+                    "document_id": "doc-risk",
+                    "knowledge_base_id": "risk",
+                    "chunk_count": 7,
+                },
+            ]
+
+        def list_documents(self, knowledge_base_id: str):
+            return [
+                document
+                for document in self.documents
+                if document["knowledge_base_id"] == knowledge_base_id
+            ]
+
+    client, systems = build_client(ScopedReadySystem)
+
+    response = client.get("/knowledge-bases/risk/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ready": True,
+        "status": "ready",
+        "total_documents": 1,
+        "total_chunks": 7,
+        "last_error": None,
+    }
+    assert systems[0].ready_knowledge_base_ids == ["risk"]
+    assert systems[0].ensure_calls == 0
+
+
+def test_scoped_ready_rejects_invalid_path_knowledge_base_id_before_system_creation():
+    client, systems = build_client()
+
+    response = client.get("/knowledge-bases/bad!/ready")
+
+    assert response.status_code == 422
+    assert systems == []
 
 
 def test_ready_reports_knowledge_base_initialization_failure_after_system_created():
@@ -221,7 +314,7 @@ def test_ready_reports_knowledge_base_initialization_failure_after_system_create
     service = RAGService(FailingWarmupSystem)
 
     try:
-        service.ensure_knowledge_base_ready()
+        service.ensure_knowledge_base_ready("finance")
     except RuntimeError:
         pass
 
@@ -238,27 +331,26 @@ def test_api_components_are_available_from_focused_modules():
     from finrag.api.rag_service import RAGService
 
     assert RAGService is ExportedRAGService
-    request = AskRequest(question="  hello  ", knowledge_base_id="finance")
+    request = AskRequest(question="  hello  ")
     assert request.question == "hello"
-    assert request.knowledge_base_id == "finance"
-    request_with_kb = AskRequest(question="hello", knowledge_base_id=" kb-finance ")
-    assert request_with_kb.knowledge_base_id == "kb-finance"
+    assert request.return_sources is True
+    assert request.return_trace is False
     with pytest.raises(ValueError, match="Field required"):
-        AskRequest(question="hello")
+        AskRequest()
     with pytest.raises(ValueError, match="knowledge_base_id"):
-        AskRequest(question="hello", knowledge_base_id="../outside")
+        AskRequest(question="hello", knowledge_base_id="finance")
     assert not hasattr(request, "retrieval_strategy")
+    assert not hasattr(request, "knowledge_base_id")
 
 
-def test_ask_initializes_knowledge_base_before_question():
+def test_ask_initializes_scoped_knowledge_base_before_question():
     client, systems = build_client()
 
     with client.stream(
         "POST",
-        "/ask",
+        "/knowledge-bases/finance/ask",
         json={
             "question": "客户风险等级如何匹配？",
-            "knowledge_base_id": "finance",
             "return_sources": True,
             "return_trace": True,
         },
@@ -274,6 +366,7 @@ def test_ask_initializes_knowledge_base_before_question():
     assert systems[0].ensure_calls == 1
     assert systems[0].build_calls == 1
     assert systems[0].ask_calls[0]["question"] == "客户风险等级如何匹配？"
+    assert systems[0].ask_calls[0]["knowledge_base_id"] == "finance"
 
 
 def test_ask_returns_sse_events_sources_and_trace():
@@ -281,10 +374,9 @@ def test_ask_returns_sse_events_sources_and_trace():
 
     with client.stream(
         "POST",
-        "/ask",
+        "/knowledge-bases/kb-finance/ask",
         json={
             "question": "客户风险等级如何匹配？",
-            "knowledge_base_id": "kb-finance",
             "return_sources": True,
             "return_trace": True,
         },
@@ -301,21 +393,36 @@ def test_ask_returns_sse_events_sources_and_trace():
     assert "retrieval_strategy" not in systems[0].ask_calls[0]
 
 
-def test_ask_rejects_omitted_knowledge_base_id_before_system_creation():
+def test_removed_ask_route_is_not_registered():
     client, systems = build_client()
 
-    response = client.post("/ask", json={"question": "客户风险等级如何匹配？"})
+    response = client.post(
+        "/ask",
+        json={"question": "客户风险等级如何匹配？", "knowledge_base_id": "finance"},
+    )
+
+    assert response.status_code == 404
+    assert systems == []
+
+
+def test_ask_rejects_invalid_path_knowledge_base_id_before_system_creation():
+    client, systems = build_client()
+
+    response = client.post(
+        "/knowledge-bases/bad!/ask",
+        json={"question": "客户风险等级如何匹配？"},
+    )
 
     assert response.status_code == 422
     assert systems == []
 
 
-def test_ask_rejects_invalid_knowledge_base_id_before_system_creation():
+def test_ask_rejects_body_knowledge_base_id_before_system_creation():
     client, systems = build_client()
 
     response = client.post(
-        "/ask",
-        json={"question": "客户风险等级如何匹配？", "knowledge_base_id": "../outside"},
+        "/knowledge-bases/risk/ask",
+        json={"question": "客户风险等级如何匹配？", "knowledge_base_id": "finance"},
     )
 
     assert response.status_code == 422
@@ -327,10 +434,9 @@ def test_ask_stream_respects_return_sources_and_trace_flags():
 
     with client.stream(
         "POST",
-        "/ask",
+        "/knowledge-bases/kb-finance/ask",
         json={
             "question": "客户风险等级如何匹配？",
-            "knowledge_base_id": "kb-finance",
             "return_sources": False,
             "return_trace": False,
         },
@@ -417,7 +523,8 @@ def test_service_stream_sets_cancel_event_when_client_stops_reading():
 
     async def read_one_chunk_and_close():
         stream = service.ask_stream(
-            AskRequest(question="客户风险等级如何匹配？", knowledge_base_id="finance"),
+            AskRequest(question="客户风险等级如何匹配？"),
+            "finance",
             is_disconnected=lambda: asyncio.sleep(0, result=False),
         )
         first = await stream.__anext__()
