@@ -6,6 +6,23 @@ export type ReadyResponse = {
   last_error: string | null;
 };
 
+export type RebuildJobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type RebuildJobResponse = {
+  job_id: string;
+  knowledge_base_id: string;
+  status: RebuildJobStatus;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+  result: {
+    document_count: number;
+    chunk_count: number;
+    manifest_schema_version: number;
+  } | null;
+};
+
 export type DocumentRecord = {
   document_id: string;
   filename: string;

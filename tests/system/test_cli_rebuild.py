@@ -22,19 +22,49 @@ def test_cli_rebuild_invokes_source_rebuild(monkeypatch, capsys):
     calls = []
 
     class FakeSystem:
-        def rebuild_from_sources(self):
-            calls.append("rebuild")
+        def rebuild_from_sources(self, knowledge_base_id):
+            calls.append(knowledge_base_id)
             return {"document_count": 2, "chunk_count": 5, "manifest_schema_version": 9}
 
     monkeypatch.setattr(cli, "FinRAGSystem", FakeSystem)
 
-    exit_code = cli.main(["rebuild"])
+    exit_code = cli.main(["rebuild", "--knowledge-base-id", "finance"])
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert calls == ["rebuild"]
+    assert calls == ["finance"]
     assert "document_count=2" in output
     assert "manifest_schema_version=9" in output
+
+
+def test_cli_rebuild_requires_knowledge_base_id():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["rebuild"])
+
+    assert exc_info.value.code == 2
+
+
+def test_cli_rebuild_accepts_kb_alias(monkeypatch):
+    calls = []
+
+    class FakeSystem:
+        def rebuild_from_sources(self, knowledge_base_id):
+            calls.append(knowledge_base_id)
+            return {"document_count": 0, "chunk_count": 0, "manifest_schema_version": 1}
+
+    monkeypatch.setattr(cli, "FinRAGSystem", FakeSystem)
+
+    exit_code = cli.main(["rebuild", "--kb", "risk"])
+
+    assert exit_code == 0
+    assert calls == ["risk"]
+
+
+def test_cli_rebuild_rejects_invalid_knowledge_base_id():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["rebuild", "--knowledge-base-id", "bad!"])
+
+    assert exc_info.value.code == 2
 
 
 def test_cli_import_does_not_require_project_root_on_pythonpath(tmp_path):
@@ -176,7 +206,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
     system.generation_module = SimpleNamespace()
     system._refresh_retrieval = lambda vector_index, leaf_nodes, knowledge_base_id: None
 
-    result = system.rebuild_from_sources()
+    result = system.rebuild_from_sources("finance")
 
     assert data_module.registry_seen is None
     assert result["document_count"] == 1
@@ -186,11 +216,12 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
 
 @requires_live_vector_stack
 def test_rebuild_from_sources_replaces_document_registry_from_source_files(tmp_path):
-    source = tmp_path / "policy.md"
+    source = tmp_path / "finance" / "policy.md"
+    source.parent.mkdir(parents=True)
     source.write_text("# 制度\n客户风险等级应与产品风险等级匹配", encoding="utf-8")
     system = FinRAGSystem(RAGConfig(data_path=str(tmp_path)))
 
-    result = system.rebuild_from_sources()
+    result = system.rebuild_from_sources("finance")
 
     documents = system.document_registry.list()
     assert result["document_count"] == 1

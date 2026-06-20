@@ -6,12 +6,15 @@ import {
   DocumentRecord,
   KnowledgeBaseRecord,
   PipelineStep,
+  RebuildJobResponse,
   askQuestionStream,
   createKnowledgeBase as createKnowledgeBaseApi,
   deleteDocument as deleteDocumentApi,
+  getKnowledgeBaseRebuildJob,
   getKnowledgeBaseReady,
   listKnowledgeBases,
   listDocuments,
+  rebuildKnowledgeBase as rebuildKnowledgeBaseApi,
   reindexDocument as reindexDocumentApi,
   uploadDocument,
   warmupKnowledgeBase as warmupKnowledgeBaseApi,
@@ -64,6 +67,32 @@ function upsertStep(steps: PipelineStep[], step: PipelineStep) {
   return next.sort((a, b) => a.order - b.order);
 }
 
+const REBUILD_POLL_INTERVAL_MS = 1200;
+const REBUILD_POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForRebuildCompletion(
+  knowledgeBaseId: string,
+  initialJob: RebuildJobResponse,
+) {
+  let job = initialJob;
+  const startedAt = Date.now();
+  while (job.status === "queued" || job.status === "running") {
+    if (Date.now() - startedAt > REBUILD_POLL_TIMEOUT_MS) {
+      throw { message: "全量重建超时。" };
+    }
+    await delay(REBUILD_POLL_INTERVAL_MS);
+    job = await getKnowledgeBaseRebuildJob(knowledgeBaseId, job.job_id);
+  }
+  if (job.status === "failed") {
+    throw { message: job.error ?? "全量重建失败。" };
+  }
+  return job;
+}
+
 function App() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -80,6 +109,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [answerBusy, setAnswerBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
   const [warmupBusy, setWarmupBusy] = useState(false);
   const [reindexingDocId, setReindexingDocId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -90,6 +120,7 @@ function App() {
   const [totalDocuments, setTotalDocuments] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const knowledgeBaseIdRef = useRef(knowledgeBaseId);
   const warmedKnowledgeBasesRef = useRef<Set<string>>(new Set());
   const currentKnowledgeBase = knowledgeBases.find(
     (item) => item.knowledge_base_id === knowledgeBaseId,
@@ -188,6 +219,29 @@ function App() {
       setError(errorMessage(caught, "知识库预热失败。"));
     } finally {
       setWarmupBusy(false);
+    }
+  }
+
+  async function handleRebuildKnowledgeBase() {
+    if (!knowledgeBaseId || rebuildBusy) {
+      return;
+    }
+    const targetKnowledgeBaseId = knowledgeBaseId;
+    setRebuildBusy(true);
+    setError("");
+    try {
+      const job = await rebuildKnowledgeBaseApi(targetKnowledgeBaseId);
+      await waitForRebuildCompletion(targetKnowledgeBaseId, job);
+      warmedKnowledgeBasesRef.current.add(targetKnowledgeBaseId);
+      await refreshKnowledgeBases();
+      if (knowledgeBaseIdRef.current === targetKnowledgeBaseId) {
+        await refreshReady(targetKnowledgeBaseId);
+      }
+    } catch (caught) {
+      warmedKnowledgeBasesRef.current.delete(targetKnowledgeBaseId);
+      setError(errorMessage(caught, "全量重建失败。"));
+    } finally {
+      setRebuildBusy(false);
     }
   }
 
@@ -382,6 +436,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    knowledgeBaseIdRef.current = knowledgeBaseId;
+  }, [knowledgeBaseId]);
+
+  useEffect(() => {
     const hasParsing = documents.some((doc) => doc.status === "parsing");
     if (!hasParsing) return;
     const interval = setInterval(() => {
@@ -442,6 +500,7 @@ function App() {
           submitDisabled={uploadBusy}
           totalDocuments={totalDocuments}
           totalChunks={totalChunks}
+          rebuildBusy={rebuildBusy}
           warmupBusy={warmupBusy}
           onAbort={handleAbortAnswer}
           onClearConversation={handleClearConversation}
@@ -452,6 +511,7 @@ function App() {
           onReindexDocument={reindexDocument}
           onDeleteDocument={deleteDocument}
           onCreateKnowledgeBase={(nextId) => void createKnowledgeBase(nextId)}
+          onRebuildKnowledgeBase={() => void handleRebuildKnowledgeBase()}
           onWarmupKnowledgeBase={() => void handleWarmupKnowledgeBase()}
           reindexingDocId={reindexingDocId}
         />

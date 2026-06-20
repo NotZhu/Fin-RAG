@@ -15,6 +15,7 @@ from finrag.api.routes.frontend import FRONTEND_DIST_DIR, register_frontend_rout
 from finrag.api.routes.health import register_health_routes
 from finrag.api.routes.knowledge_bases import register_knowledge_base_routes
 from finrag.api.routes.qa import register_qa_routes
+from finrag.api.routes.rebuilds import register_rebuild_routes
 from finrag.api.rag_service import RAGService
 from finrag.application.system import FinRAGSystem
 
@@ -51,6 +52,8 @@ def create_app(
     register_knowledge_base_routes(app, service)
     # 注册文档路由
     register_document_routes(app, service, upload_dir)
+    # 注册知识库全量重建路由
+    register_rebuild_routes(app, service)
     # 注册问答路由
     register_qa_routes(app, service)
     return app

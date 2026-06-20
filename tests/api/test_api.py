@@ -23,6 +23,7 @@ class FakeFinRAGSystem:
         # 问答次数
         self.ask_calls = []
         self.ready_knowledge_base_ids = []
+        self.rebuild_calls = []
         self.retrieval_module = None
         self.config = SimpleNamespace(
             knowledge_base_id="kb-config-default",
@@ -64,6 +65,15 @@ class FakeFinRAGSystem:
 
     def list_documents(self, knowledge_base_id: str):
         return []
+
+    def rebuild_from_sources(self, knowledge_base_id):
+        self.rebuild_calls.append(knowledge_base_id)
+        self.retrieval_module = object()
+        return {
+            "document_count": 1,
+            "chunk_count": 3,
+            "manifest_schema_version": 1,
+        }
 
     def ask_question(self, question, **kwargs):
         assert "stream" not in kwargs
@@ -252,6 +262,55 @@ def test_scoped_warmup_initializes_path_knowledge_base():
     assert response.json()["ready"] is True
     assert systems[0].ensure_calls == 1
     assert systems[0].ensure_knowledge_base_ids == ["risk"]
+
+
+def test_scoped_rebuild_job_rebuilds_path_knowledge_base():
+    client, systems = build_client()
+
+    started = client.post("/knowledge-bases/risk/rebuilds")
+
+    assert started.status_code == 202
+    payload = started.json()
+    assert payload["knowledge_base_id"] == "risk"
+    assert payload["job_id"]
+
+    deadline = time.time() + 2
+    status_payload = payload
+    while time.time() < deadline:
+        status_response = client.get(f"/knowledge-bases/risk/rebuilds/{payload['job_id']}")
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        if status_payload["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert status_payload["status"] == "succeeded"
+    assert status_payload["result"] == {
+        "document_count": 1,
+        "chunk_count": 3,
+        "manifest_schema_version": 1,
+    }
+    assert status_payload["error"] is None
+    assert systems[0].rebuild_calls == ["risk"]
+
+
+def test_scoped_rebuild_rejects_invalid_path_knowledge_base_id_before_system_creation():
+    client, systems = build_client()
+
+    response = client.post("/knowledge-bases/bad!/rebuilds")
+
+    assert response.status_code == 422
+    assert systems == []
+
+
+def test_scoped_rebuild_job_lookup_returns_404_for_unknown_job():
+    client, systems = build_client()
+
+    response = client.get("/knowledge-bases/risk/rebuilds/missing-job")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "rebuild_job_not_found"
+    assert systems == []
 
 
 def test_scoped_ready_reports_path_knowledge_base_state():

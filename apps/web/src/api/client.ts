@@ -7,6 +7,7 @@ import type {
   KnowledgeBaseRecord,
   KnowledgeBasesResponse,
   ReadyResponse,
+  RebuildJobResponse,
 } from "../types/api";
 
 export type {
@@ -19,6 +20,7 @@ export type {
   KnowledgeBasesResponse,
   PipelineStep,
   ReadyResponse,
+  RebuildJobResponse,
 } from "../types/api";
 
 async function readError(response: Response): Promise<ApiError> {
@@ -47,6 +49,24 @@ export async function warmupKnowledgeBase(
   return fetchJson<ReadyResponse>(
     `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/warmup`,
     { method: "POST" },
+  );
+}
+
+export async function rebuildKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<RebuildJobResponse> {
+  return fetchJson<RebuildJobResponse>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/rebuilds`,
+    { method: "POST" },
+  );
+}
+
+export async function getKnowledgeBaseRebuildJob(
+  knowledgeBaseId: string,
+  jobId: string,
+): Promise<RebuildJobResponse> {
+  return fetchJson<RebuildJobResponse>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/rebuilds/${encodeURIComponent(jobId)}`,
   );
 }
 

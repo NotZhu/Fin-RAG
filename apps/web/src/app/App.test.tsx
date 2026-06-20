@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
 
 const appStyles = readFileSync("src/styles/app.css", "utf8");
+const indexHtml = readFileSync("index.html", "utf8");
 
 const readyPayload = {
   ready: true,
@@ -208,8 +209,8 @@ describe("FinRAG chat interface", () => {
     await screen.findByText("文档就绪，随时提问");
 
     expect(appStyles).toContain("color-scheme: light;");
-    expect(appStyles).toContain("--bg: #ffffff;");
-    expect(appStyles).toContain("--rail: #f9f9f9;");
+    expect(appStyles).toContain("--bg: #fcfaf5;");
+    expect(appStyles).toContain("--rail: #f7f5ee;");
     expect(appStyles).toContain("grid-template-columns: 320px minmax(0, 1fr);");
     expect(appStyles).toContain(".app-layout.sidebar-collapsed");
     expect(appStyles).toContain(".left-rail.is-collapsed");
@@ -277,6 +278,12 @@ describe("FinRAG chat interface", () => {
     expect(
       screen.getByRole("button", { name: "展开侧栏" }),
     ).toBeInTheDocument();
+  });
+
+  test("uses the Fin RAG browser tab title with a blank favicon", () => {
+    expect(indexHtml).toContain("<title>Fin RAG</title>");
+    expect(indexHtml).toContain('<link rel="icon" href="data:," />');
+    expect(indexHtml).not.toMatch(/href=["']\/?favicon/i);
   });
 
   test("loads ready state through the selected knowledge base scope", async () => {
@@ -389,14 +396,26 @@ describe("FinRAG chat interface", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "确认索引文档" });
     expect(within(dialog).getByLabelText("policy.md")).toBeInTheDocument();
+    const summaryRows = dialog.querySelectorAll(".upload-summary-row");
+    expect(summaryRows).toHaveLength(1);
+    expect(within(summaryRows[0] as HTMLElement).getByText("文件")).toBeInTheDocument();
+    expect(within(summaryRows[0] as HTMLElement).getByText("大小")).toBeInTheDocument();
+    expect(within(summaryRows[0] as HTMLElement).getByText("0.0 KB")).toBeInTheDocument();
+    expect(dialog.querySelector(".upload-close-button")).toBeNull();
+    expect(dialog.querySelector(".modal-action-button")).toBeNull();
     expect(
       within(dialog).queryByRole("textbox", { name: "知识库" }),
     ).not.toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "索引" })).toHaveClass(
-      "modal-action-button",
+    expect(within(dialog).getByRole("button", { name: "取消" })).toHaveClass(
+      "confirm-btn",
+      "cancel",
+    );
+    expect(within(dialog).getByRole("button", { name: "确认" })).toHaveClass(
+      "confirm-btn",
+      "primary",
     );
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "索引" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "确认" }));
 
     await waitFor(() => {
       expect(
@@ -592,6 +611,113 @@ describe("FinRAG chat interface", () => {
     });
     const stats = document.querySelector(".kb-stats") as HTMLElement;
     expect(within(stats).getByText("9")).toHaveClass("kb-stat-value");
+  });
+
+  test("confirms and starts a full rebuild for the current knowledge base", async () => {
+    const fetchMock = mockInitialLoad()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          job_id: "job-finance",
+          knowledge_base_id: "finance",
+          status: "succeeded",
+          created_at: "2026-06-20T00:00:00+00:00",
+          started_at: "2026-06-20T00:00:00+00:00",
+          completed_at: "2026-06-20T00:00:01+00:00",
+          error: null,
+          result: {
+            document_count: 1,
+            chunk_count: 11,
+            manifest_schema_version: 1,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(knowledgeBasesPayload))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...readyPayload,
+          total_documents: 1,
+          total_chunks: 11,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          documents: [
+            {
+              ...documentsPayload.documents[0],
+              chunk_count: 11,
+            },
+          ],
+        }),
+      );
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+    expect(
+      screen.queryByRole("menuitem", { name: "全量重建知识库" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "更多操作" }),
+    );
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "全量重建知识库" }),
+    );
+
+    const message = await screen.findByText("确定要全量重建 Finance 吗？");
+    const dialog = message.closest(".confirm-dialog") as HTMLElement;
+    expect(within(dialog).getByRole("button", { name: "取消" })).toHaveClass(
+      "confirm-btn",
+      "cancel",
+    );
+    expect(within(dialog).getByRole("button", { name: "重建" })).toHaveClass(
+      "confirm-btn",
+      "danger",
+    );
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "重建" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/knowledge-bases/finance/rebuilds",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const stats = document.querySelector(".kb-stats") as HTMLElement;
+    expect(await within(stats).findByText("11")).toHaveClass("kb-stat-value");
+  });
+
+  test("places refresh before the more knowledge base actions", async () => {
+    mockInitialLoad();
+
+    const { container } = render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    const stats = container.querySelector(".kb-stats") as HTMLElement;
+    const createButton = within(stats).getByRole("button", {
+      name: "新建知识库",
+    });
+    const refreshButton = within(stats).getByRole("button", {
+      name: "刷新知识库",
+    });
+    const moreButton = within(stats).getByRole("button", {
+      name: "更多操作",
+    });
+
+    expect(createButton).toHaveClass("docs-create-button");
+    expect(createButton).not.toHaveTextContent("新建知识库");
+    expect(moreButton).toHaveClass("kb-more-button");
+    expect(moreButton).not.toHaveTextContent("全量重建知识库");
+    expect(
+      createButton.compareDocumentPosition(refreshButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      refreshButton.compareDocumentPosition(moreButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   test("closes the knowledge base dropdown when clicking outside it", async () => {

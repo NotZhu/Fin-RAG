@@ -20,8 +20,10 @@ def test_document_lifecycle_entrypoints_require_knowledge_base_id():
         signature(FinRAGSystem.delete_document).parameters["knowledge_base_id"],
         signature(FinRAGSystem.reindex_document).parameters["knowledge_base_id"],
         signature(FinRAGSystem.knowledge_base_scope).parameters["knowledge_base_id"],
+        signature(FinRAGSystem.rebuild_from_sources).parameters["knowledge_base_id"],
         signature(DocumentLifecycleService.delete_document).parameters["knowledge_base_id"],
         signature(DocumentLifecycleService.reindex_document).parameters["knowledge_base_id"],
+        signature(KnowledgeBaseService.rebuild_from_sources).parameters["knowledge_base_id"],
         signature(KnowledgeBaseScope.from_config).parameters["knowledge_base_id"],
     ]
 
@@ -52,10 +54,13 @@ def test_finrag_system_delegates_ask_question_to_pipeline(tmp_path):
 
     fake_pipeline = FakePipeline()
     system.qa_pipeline = fake_pipeline
+    ensure_calls = []
+    system.ensure_knowledge_base_ready = lambda knowledge_base_id: ensure_calls.append(knowledge_base_id)
 
     result = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="finance", return_trace=True)
 
     assert result == "response"
+    assert ensure_calls == ["finance"]
     assert fake_pipeline.calls == [
         (
             ("客户风险等级如何匹配？",),
@@ -156,8 +161,8 @@ def test_finrag_system_delegates_knowledge_base_entrypoints(tmp_path):
         def ensure_knowledge_base_ready(self):
             self.calls.append(("ensure_knowledge_base_ready", (), {}))
 
-        def rebuild_from_sources(self):
-            self.calls.append(("rebuild_from_sources", (), {}))
+        def rebuild_from_sources(self, knowledge_base_id):
+            self.calls.append(("rebuild_from_sources", (knowledge_base_id,), {}))
             return {"document_count": 1}
 
     fake_knowledge_base = FakeKnowledgeBase()
@@ -166,14 +171,14 @@ def test_finrag_system_delegates_knowledge_base_entrypoints(tmp_path):
     system.initialize_system()
     system.build_knowledge_base()
     system.ensure_knowledge_base_ready()
-    result = system.rebuild_from_sources()
+    result = system.rebuild_from_sources("kb-finance")
 
     assert result == {"document_count": 1}
     assert fake_knowledge_base.calls == [
         ("initialize_system", (), {}),
         ("build_knowledge_base", (), {}),
         ("ensure_knowledge_base_ready", (), {}),
-        ("rebuild_from_sources", (), {}),
+        ("rebuild_from_sources", ("kb-finance",), {}),
     ]
     assert isinstance(system._default_knowledge_base(), KnowledgeBaseService)
 

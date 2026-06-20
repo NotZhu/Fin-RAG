@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
   Clock3,
   FileSearch,
   FileText,
+  MoreHorizontal,
   Plus,
+  RefreshCcw,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -24,8 +26,10 @@ type DocumentsPageProps = {
   onCreateKnowledgeBase: (knowledgeBaseId: string) => Promise<void> | void;
   onReindexDocument: (documentId: string) => void;
   onDeleteDocument: (documentId: string) => void;
+  onRebuildKnowledgeBase: () => void;
   onWarmupKnowledgeBase: () => void;
   reindexingDocId: string | null;
+  rebuildBusy: boolean;
   warmupBusy: boolean;
   totalDocuments: number;
   totalChunks: number;
@@ -42,8 +46,10 @@ export function DocumentsPage({
   onCreateKnowledgeBase,
   onReindexDocument,
   onDeleteDocument,
+  onRebuildKnowledgeBase,
   onWarmupKnowledgeBase,
   reindexingDocId,
+  rebuildBusy,
   warmupBusy,
   totalDocuments,
   totalChunks,
@@ -53,11 +59,38 @@ export function DocumentsPage({
     null,
   );
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const totalPages = Math.max(1, Math.ceil(documents.length / PAGE_SIZE));
 
   useEffect(() => {
     setPage(1);
   }, [documents.length]);
+
+  useEffect(() => {
+    if (!isActionsMenuOpen) {
+      return;
+    }
+
+    function closeOnOutside(event: PointerEvent) {
+      if (!actionsMenuRef.current?.contains(event.target as Node)) {
+        setIsActionsMenuOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsActionsMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isActionsMenuOpen]);
 
   const safePage = Math.min(page, totalPages);
   const start = (safePage - 1) * PAGE_SIZE;
@@ -70,6 +103,7 @@ export function DocumentsPage({
         ? "加载失败"
         : "暂无知识库";
   const updatedAtText = formatUploadTime(knowledgeBaseUpdatedAt);
+  const runtimeActionBusy = warmupBusy || rebuildBusy;
 
   return (
     <div className="docs-page">
@@ -101,10 +135,19 @@ export function DocumentsPage({
             ) : null}
           </div>
           <button
+            aria-label="新建知识库"
+            className="docs-create-button"
+            title="新建知识库"
+            type="button"
+            onClick={() => setIsCreateDialogOpen(true)}
+          >
+            <Plus size={16} />
+          </button>
+          <button
             aria-label="刷新知识库"
             className="kb-warmup-button"
             disabled={
-              warmupBusy ||
+              runtimeActionBusy ||
               !knowledgeBaseIsAvailable ||
               knowledgeBaseLoadState !== "ready"
             }
@@ -114,16 +157,48 @@ export function DocumentsPage({
           >
             <RefreshCw className={warmupBusy ? "spin" : ""} size={16} />
           </button>
+          <div className="kb-actions-menu-wrap" ref={actionsMenuRef}>
+            <button
+              aria-expanded={isActionsMenuOpen}
+              aria-haspopup="menu"
+              aria-label="更多操作"
+              className="kb-more-button"
+              disabled={
+                runtimeActionBusy ||
+                !knowledgeBaseIsAvailable ||
+                knowledgeBaseLoadState !== "ready"
+              }
+              title="更多操作"
+              type="button"
+              onClick={() => setIsActionsMenuOpen((current) => !current)}
+            >
+              <MoreHorizontal size={16} />
+            </button>
+            {isActionsMenuOpen ? (
+              <div
+                aria-label="知识库操作"
+                className="kb-actions-menu"
+                role="menu"
+              >
+                <button
+                  className="kb-actions-menu-item danger"
+                  role="menuitem"
+                  type="button"
+                  onClick={() => {
+                    setPendingAction({
+                      type: "rebuild",
+                      knowledgeBaseName,
+                    });
+                    setIsActionsMenuOpen(false);
+                  }}
+                >
+                  <RefreshCcw className={rebuildBusy ? "spin" : ""} size={14} />
+                  <span>全量重建知识库</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
-        <button
-          className="docs-create-button"
-          title="新建知识库"
-          type="button"
-          onClick={() => setIsCreateDialogOpen(true)}
-        >
-          <Plus size={16} />
-          <span>新建知识库</span>
-        </button>
       </div>
       {documents.length ? (
         <>
@@ -247,8 +322,10 @@ export function DocumentsPage({
           onConfirm={() => {
             if (pendingAction.type === "reindex") {
               onReindexDocument(pendingAction.documentId);
-            } else {
+            } else if (pendingAction.type === "delete") {
               onDeleteDocument(pendingAction.documentId);
+            } else {
+              onRebuildKnowledgeBase();
             }
             setPendingAction(null);
           }}

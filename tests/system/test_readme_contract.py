@@ -22,7 +22,7 @@ def test_readme_is_github_style_and_current_state_only():
         assert historical_term not in readme
 
     assert "docker compose up -d postgres redis etcd minio milvus" in readme
-    assert "finrag rebuild" in readme
+    assert "finrag rebuild --knowledge-base-id finance" in readme
     assert "uvicorn finrag.api:app --host 127.0.0.1 --port 8000" in readme
     assert "python -m scripts.evaluate_retrieval --json" in readme
     assert "python -m scripts.evaluate_ragas datasets/eval/finance_ragas_eval_set.jsonl --json" in readme

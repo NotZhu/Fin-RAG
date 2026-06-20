@@ -5,8 +5,10 @@ import {
   createKnowledgeBase,
   deleteDocument,
   getKnowledgeBaseReady,
+  getKnowledgeBaseRebuildJob,
   listKnowledgeBases,
   listDocuments,
+  rebuildKnowledgeBase,
   reindexDocument,
   uploadDocument,
   warmupKnowledgeBase,
@@ -179,6 +181,64 @@ describe("knowledge base client", () => {
     expect(observedInput).toBe("/knowledge-bases/kb-finance/warmup");
     expect(observedMethod).toBe("POST");
     expect(result.ready).toBe(true);
+  });
+
+  test("starts and reads a scoped knowledge base rebuild job", async () => {
+    const rebuildPayload = {
+      job_id: "job-1",
+      knowledge_base_id: "kb-finance",
+      status: "succeeded",
+      created_at: "2026-06-20T00:00:00+00:00",
+      started_at: "2026-06-20T00:00:00+00:00",
+      completed_at: "2026-06-20T00:00:01+00:00",
+      error: null,
+      result: {
+        document_count: 1,
+        chunk_count: 5,
+        manifest_schema_version: 1,
+      },
+    };
+    const observed: Array<{ input: string; method: string }> = [];
+    vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce((input, init) => {
+        observed.push({
+          input: String(input),
+          method: String(init?.method ?? "GET"),
+        });
+        return Promise.resolve(
+          new Response(JSON.stringify(rebuildPayload), {
+            status: 202,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      })
+      .mockImplementationOnce((input, init) => {
+        observed.push({
+          input: String(input),
+          method: String(init?.method ?? "GET"),
+        });
+        return Promise.resolve(
+          new Response(JSON.stringify(rebuildPayload), {
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      });
+
+    const started = await rebuildKnowledgeBase("kb-finance");
+    const current = await getKnowledgeBaseRebuildJob("kb-finance", "job-1");
+
+    expect(started.status).toBe("succeeded");
+    expect(current.result?.chunk_count).toBe(5);
+    expect(observed).toEqual([
+      {
+        input: "/knowledge-bases/kb-finance/rebuilds",
+        method: "POST",
+      },
+      {
+        input: "/knowledge-bases/kb-finance/rebuilds/job-1",
+        method: "GET",
+      },
+    ]);
   });
 
   test("lists knowledge bases", async () => {

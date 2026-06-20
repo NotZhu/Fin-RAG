@@ -181,10 +181,12 @@ class KnowledgeBaseService:
             except Exception:
                 pass
 
-    def rebuild_from_sources(self, knowledge_base_id: str | None = None) -> dict:
+    def rebuild_from_sources(self, knowledge_base_id: str) -> dict:
         """
         从数据源重建知识库索引
         """
+        if not str(knowledge_base_id or "").strip():
+            raise ValueError("knowledge_base_id is required")
         system = self.system
         with system._write_lock:
             knowledge_base_id = self._scope(knowledge_base_id).knowledge_base_id

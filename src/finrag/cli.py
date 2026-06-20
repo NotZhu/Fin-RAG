@@ -9,8 +9,16 @@ from pathlib import Path
 from typing import Sequence
 
 from .application.system import FinRAGSystem
+from .core.config import validate_knowledge_base_id
 
 logger = logging.getLogger(__name__)
+
+
+def _knowledge_base_id_argument(value: str) -> str:
+    try:
+        return validate_knowledge_base_id(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def run_evaluation_report(args: argparse.Namespace):
@@ -76,7 +84,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # 添加子命令解析器
     subparsers = parser.add_subparsers(dest="command")
     # 添加重建索引子命令
-    subparsers.add_parser("rebuild", help="从源文档全量重建 PostgreSQL/BM25/Milvus 索引")
+    rebuild_parser = subparsers.add_parser("rebuild", help="从源文档全量重建 PostgreSQL/BM25/Milvus 索引")
+    rebuild_parser.add_argument(
+        "--knowledge-base-id",
+        "--kb",
+        dest="knowledge_base_id",
+        required=True,
+        type=_knowledge_base_id_argument,
+        help="要全量重建的知识库 ID",
+    )
     # 添加评估子命令
     eval_parser = subparsers.add_parser("eval", help="运行 Ragas 评估报告")
     # 添加评估数据集路径参数
@@ -88,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "rebuild":
-            result = FinRAGSystem().rebuild_from_sources()
+            result = FinRAGSystem().rebuild_from_sources(args.knowledge_base_id)
             _print_key_values(result)
             return 0
         if args.command == "eval":

@@ -162,16 +162,14 @@ class FinRAGSystem:
             return
         self.knowledge_base.ensure_knowledge_base_ready(knowledge_base_id)
 
-    def rebuild_from_sources(self, knowledge_base_id: str | None = None) -> dict:
+    def rebuild_from_sources(self, knowledge_base_id: str) -> dict:
         """
         从源文档强制全量重建 PostgreSQL 节点/BM25 状态和 Milvus collection
         Args:
-            knowledge_base_id: 知识库 ID，未提供时使用配置默认值
+            knowledge_base_id: 知识库 ID
         Returns:
             重建摘要，供 CLI 和运维任务展示
         """
-        if knowledge_base_id is None:
-            return self.knowledge_base.rebuild_from_sources()
         return self.knowledge_base.rebuild_from_sources(knowledge_base_id)
 
     def ready(self, knowledge_base_id: str | None = None) -> dict:

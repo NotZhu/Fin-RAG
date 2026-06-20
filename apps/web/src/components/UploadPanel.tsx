@@ -5,7 +5,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { CloudUpload, FileText, Loader2, Upload, X } from "lucide-react";
+import { CloudUpload, FileText } from "lucide-react";
 
 import { formatFileSize, splitFilename } from "./utils";
 
@@ -127,16 +127,6 @@ export function UploadPanel({
             className="upload-confirm-dialog"
             role="dialog"
           >
-            <button
-              aria-label="取消"
-              className="icon-button upload-close-button"
-              title="取消"
-              type="button"
-              onClick={handleCancelUpload}
-              disabled={uploadBusy}
-            >
-              <X size={16} />
-            </button>
             <div className="upload-confirm-header">
               <FileText size={22} />
               <h3 id="upload-confirm-title">确认索引文档</h3>
@@ -158,17 +148,23 @@ export function UploadPanel({
                     </span>
                   ) : null}
                 </strong>
-              </div>
-              <div className="upload-summary-row">
                 <span>大小</span>
-                <strong>{formatFileSize(selectedFile.size)}</strong>
+                <strong className="upload-summary-size">
+                  {formatFileSize(selectedFile.size)}
+                </strong>
               </div>
             </div>
-            <div className="modal-actions">
+            <div className="confirm-actions">
               <button
-                aria-label="索引"
-                className="primary-button modal-action-button"
-                title="索引"
+                className="confirm-btn cancel"
+                type="button"
+                onClick={handleCancelUpload}
+                disabled={uploadBusy}
+              >
+                取消
+              </button>
+              <button
+                className="confirm-btn primary"
                 type="button"
                 onClick={() => {
                   setIsConfirmOpen(false);
@@ -176,11 +172,7 @@ export function UploadPanel({
                 }}
                 disabled={uploadBusy || uploadDisabled}
               >
-                {uploadBusy ? (
-                  <Loader2 className="spin" size={17} />
-                ) : (
-                  <Upload size={17} />
-                )}
+                确认
               </button>
             </div>
           </div>

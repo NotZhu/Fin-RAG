@@ -27,6 +27,7 @@ type ChatPanelProps = {
   submitDisabled: boolean;
   totalDocuments: number;
   totalChunks: number;
+  rebuildBusy: boolean;
   warmupBusy: boolean;
   onAbort: () => void;
   onClearConversation: () => void;
@@ -37,6 +38,7 @@ type ChatPanelProps = {
   onReindexDocument: (documentId: string) => void;
   onDeleteDocument: (documentId: string) => void;
   onCreateKnowledgeBase: (knowledgeBaseId: string) => void;
+  onRebuildKnowledgeBase: () => void;
   onWarmupKnowledgeBase: () => void;
   reindexingDocId: string | null;
 };
@@ -58,6 +60,7 @@ export function ChatPanel({
   submitDisabled,
   totalDocuments,
   totalChunks,
+  rebuildBusy,
   warmupBusy,
   onAbort,
   onClearConversation,
@@ -68,6 +71,7 @@ export function ChatPanel({
   onReindexDocument,
   onDeleteDocument,
   onCreateKnowledgeBase,
+  onRebuildKnowledgeBase,
   onWarmupKnowledgeBase,
   reindexingDocId,
 }: ChatPanelProps) {
@@ -196,8 +200,10 @@ export function ChatPanel({
             onCreateKnowledgeBase={onCreateKnowledgeBase}
             onReindexDocument={onReindexDocument}
             onDeleteDocument={onDeleteDocument}
+            onRebuildKnowledgeBase={onRebuildKnowledgeBase}
             onWarmupKnowledgeBase={onWarmupKnowledgeBase}
             reindexingDocId={reindexingDocId}
+            rebuildBusy={rebuildBusy}
             warmupBusy={warmupBusy}
             totalDocuments={totalDocuments}
             totalChunks={totalChunks}

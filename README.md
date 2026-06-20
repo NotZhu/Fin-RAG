@@ -140,7 +140,7 @@ storage/uploads/          运行时临时上传文件；索引状态保存在 Po
 python -m pip install -e ".[dev]"
 copy .env.example .env
 docker compose up -d postgres redis etcd minio milvus
-finrag rebuild
+finrag rebuild --knowledge-base-id finance
 uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
@@ -193,6 +193,8 @@ npm run build
 | `GET`    | `/ready`                           | 返回 RAG 系统全局就绪状态和错误信息                                                            |
 | `GET`    | `/knowledge-bases/{knowledge_base_id}/ready`                            | 返回指定知识库的就绪状态、文档数、分块数和错误信息                                              |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/warmup`                            | 主动初始化指定知识库的 RAG 运行时并返回 ready 状态                                              |
+| `POST`   | `/knowledge-bases/{knowledge_base_id}/rebuilds`                          | 创建指定知识库的进程内全量重建任务，返回 `job_id` 与任务状态                                    |
+| `GET`    | `/knowledge-bases/{knowledge_base_id}/rebuilds/{job_id}`                 | 查询指定知识库全量重建任务的 `queued/running/succeeded/failed` 状态                            |
 | `GET`    | `/knowledge-bases`                                                        | 返回知识库列表                                                                                  |
 | `POST`   | `/knowledge-bases`                                                        | 创建知识库，请求体为 `{"knowledge_base_id":"finance"}`                                        |
 | `GET`    | `/knowledge-bases/{knowledge_base_id}/documents`                          | 返回指定知识库的公开文档列表和索引状态                                                          |
@@ -296,6 +298,7 @@ data: {"response":{...},"final_decision":"generate"}
 | Endpoint             | Fields                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/knowledge-bases/{knowledge_base_id}/ready` | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                                          |
+| `/knowledge-bases/{knowledge_base_id}/rebuilds` | `job_id`、`knowledge_base_id`、`status`、`created_at`、`started_at`、`completed_at`、`error`、`result`                                                                                                                   |
 | `/knowledge-bases/{knowledge_base_id}/documents` | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                                     |
 | `/knowledge-bases/{knowledge_base_id}/ask` SSE         | `analysis`、`pipeline_step`、`route`、`source`、`token`、`done`、`error`                                                                                                                                                |
 | `done.response`    | `question`、`route_type`、`retrieval_strategy`、`answer`、`sources`、`trace`                                                                                                                                              |
@@ -381,7 +384,7 @@ npm run build
 
 ```bash
 docker compose up -d postgres redis etcd minio milvus
-finrag rebuild
+finrag rebuild --knowledge-base-id finance
 uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
@@ -394,6 +397,6 @@ curl http://localhost:8000/ready
 
 常见恢复动作：
 
-- schema 或 manifest 不匹配：运行 `finrag rebuild`，从 `RAG_DATA_PATH` 源文档重建 PostgreSQL `documents`、`nodes`、BM25 状态和 Milvus leaf vectors。
-- Milvus collection 损坏或被清空：运行 `finrag rebuild`，collection 会 drop/recreate 并重新写入 dense+sparse leaf vectors。
+- schema 或 manifest 不匹配：运行 `finrag rebuild --knowledge-base-id finance`，从指定知识库源文档重建 PostgreSQL `documents`、`nodes`、BM25 状态和 Milvus leaf vectors。
+- Milvus collection 损坏或被清空：运行 `finrag rebuild --knowledge-base-id finance`，对应 collection 会 drop/recreate 并重新写入 dense+sparse leaf vectors。
 - Redis 缓存异常：重启 Redis 后访问 `/ready` 或执行一次检索，节点缓存会从 PostgreSQL 回源恢复。

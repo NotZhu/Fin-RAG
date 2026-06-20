@@ -1,18 +1,18 @@
 :root {
   color-scheme: light;
-  --bg: #ffffff;
-  --rail: #f9f9f9;
-  --surface: #ffffff;
-  --surface-soft: #f3f3f3;
-  --text: #0d0d0d;
-  --muted: #6b7280;
-  --muted-soft: #9ca3af;
-  --border: #e5e5e5;
-  --border-strong: #d4d4d4;
-  --primary: #111111;
+  --bg: #fcfaf5;
+  --rail: #f7f5ee;
+  --surface: #fcfaf5;
+  --surface-soft: #f2f0e7;
+  --text: #2c2c2c;
+  --muted: #7a7a6e;
+  --muted-soft: #a5a598;
+  --border: #e2dfd6;
+  --border-strong: #d2cec4;
+  --primary: #3a3a3a;
   --error: #b42318;
   --error-bg: #fff1f0;
-  --hover: #eeeeee;
+  --hover: #eeecdf;
   --badge-ok-bg: #e8f5e9;
   --badge-ok-text: #2e7d32;
   --badge-warn-bg: #fff3e0;
@@ -866,7 +866,7 @@ p {
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .kb-stats {
@@ -926,7 +926,9 @@ p {
   font-size: 14px;
 }
 
-.kb-warmup-button {
+.kb-warmup-button,
+.kb-more-button,
+.docs-create-button {
   align-items: center;
   background: transparent;
   border: 1px solid var(--border-strong);
@@ -935,9 +937,9 @@ p {
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 32px;
+  gap: 0;
   height: 32px;
   justify-content: center;
-  margin-left: auto;
   padding: 0;
   transition:
     background 0.15s,
@@ -946,32 +948,62 @@ p {
   width: 32px;
 }
 
-.kb-warmup-button:hover:not(:disabled) {
+.docs-create-button {
+  margin-left: auto;
+}
+
+.kb-warmup-button:hover:not(:disabled),
+.kb-more-button:hover:not(:disabled),
+.docs-create-button:hover {
   background: var(--surface);
   border-color: var(--text);
 }
 
-.kb-warmup-button:disabled {
+.kb-warmup-button:disabled,
+.kb-more-button:disabled {
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.7;
 }
 
-.docs-create-button {
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 650;
-  gap: 6px;
-  height: 36px;
-  padding: 0 14px;
+.kb-actions-menu-wrap {
+  flex: 0 0 auto;
+  position: relative;
 }
 
-.docs-create-button:hover {
+.kb-actions-menu {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: grid;
+  min-width: 160px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+}
+
+.kb-actions-menu-item {
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.kb-actions-menu-item:hover {
   background: var(--hover);
-  border-color: var(--text);
+}
+
+.kb-actions-menu-item.danger:hover {
+  color: var(--error);
 }
 
 .pagination {
@@ -1337,7 +1369,6 @@ p {
   align-items: center;
   display: flex;
   gap: 10px;
-  padding-right: 42px;
 }
 
 .upload-confirm-header svg {
@@ -1364,8 +1395,8 @@ p {
 .upload-summary-row {
   align-items: center;
   display: grid;
-  gap: 10px;
-  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px 14px;
+  grid-template-columns: 44px minmax(0, 1fr) 36px auto;
   min-width: 0;
 }
 
@@ -1380,6 +1411,10 @@ p {
   font-size: 13px;
   font-weight: 650;
   overflow-wrap: anywhere;
+}
+
+.upload-summary-size {
+  white-space: nowrap;
 }
 
 .upload-filename {
@@ -1400,31 +1435,6 @@ p {
 .upload-filename-extension {
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.upload-close-button {
-  position: absolute;
-  right: 16px;
-  top: 16px;
-}
-
-.modal-action-button {
-  border-radius: 999px;
-  height: 42px;
-  justify-content: center;
-  min-height: 42px;
-  min-width: 42px;
-  padding: 0;
-  width: 42px;
-}
-
-.modal-action-button svg {
-  flex: 0 0 auto;
 }
 
 .visually-hidden {

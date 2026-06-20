@@ -6,6 +6,9 @@ import asyncio
 import contextlib
 import json
 import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
@@ -31,6 +34,12 @@ class RAGService:
         self._init_lock = Lock()
         # 初始化错误信息
         self._last_error: Optional[str] = None
+        # 重建任务状态，键为知识库 ID，值为任务状态字典
+        self._rebuild_jobs: dict[str, dict[str, Any]] = {}
+        # 重建任务状态锁，确保并发访问安全
+        self._rebuild_jobs_lock = Lock()
+        # 重建任务执行器，确保串行执行
+        self._rebuild_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="finrag-rebuild")
 
     def get_system(self) -> FinRAGSystem:
         """
@@ -111,6 +120,100 @@ class RAGService:
         # 确保系统已初始化
         self.ensure_knowledge_base_ready(knowledge_base_id)
         return self.ready(knowledge_base_id)
+
+    def start_rebuild(self, knowledge_base_id: str) -> dict[str, Any]:
+        """
+        创建或复用指定知识库的进程内全量重建任务
+        Args:
+            knowledge_base_id: 目标知识库 ID
+        Returns:
+            可用于轮询的任务状态字典
+        """
+        with self._rebuild_jobs_lock:
+            for job in self._rebuild_jobs.values():
+                # 检查是否有正在运行或已排队的任务
+                if job["knowledge_base_id"] == knowledge_base_id and job["status"] in {"queued", "running"}:
+                    return dict(job)
+            # 如果没有任务，创建新任务
+            job_id = uuid.uuid4().hex
+            job = {
+                "job_id": job_id,
+                "knowledge_base_id": knowledge_base_id,
+                "status": "queued",
+                "created_at": self._utc_now(),
+                "started_at": None,
+                "completed_at": None,
+                "error": None,
+                "result": None,
+            }
+            self._rebuild_jobs[job_id] = job
+        # 提交任务到线程池
+        self._rebuild_executor.submit(self._run_rebuild_job, job_id, knowledge_base_id)
+        return self.get_rebuild_job(knowledge_base_id, job_id)
+
+    def get_rebuild_job(self, knowledge_base_id: str, job_id: str) -> dict[str, Any]:
+        """
+        查询指定知识库的进程内全量重建任务
+        Args:
+            knowledge_base_id: 目标知识库 ID
+            job_id: 任务 ID
+        Returns:
+            任务状态字典
+        Raises:
+            KeyError: 任务不存在或不属于该知识库
+        """
+        with self._rebuild_jobs_lock:
+            job = self._rebuild_jobs.get(job_id)
+            if job is None or job["knowledge_base_id"] != knowledge_base_id:
+                raise KeyError(job_id)
+            return dict(job)
+
+    def _run_rebuild_job(self, job_id: str, knowledge_base_id: str) -> None:
+        """
+        在线程池中执行全量重建，并更新进程内任务状态
+        Args:
+            job_id: 任务 ID
+            knowledge_base_id: 目标知识库 ID
+        """
+        self._update_rebuild_job(job_id, status="running", started_at=self._utc_now())
+        try:
+            system = self.get_system()
+            result = system.rebuild_from_sources(knowledge_base_id)
+        except Exception as exc:
+            error = f"{exc.__class__.__name__}: {exc}"
+            self._last_error = error
+            self._update_rebuild_job(
+                job_id,
+                status="failed",
+                completed_at=self._utc_now(),
+                error=error,
+            )
+            return
+        self._last_error = None
+        self._update_rebuild_job(
+            job_id,
+            status="succeeded",
+            completed_at=self._utc_now(),
+            result=result,
+        )
+
+    def _update_rebuild_job(self, job_id: str, **changes: Any) -> None:
+        """
+        原子更新重建任务状态；任务不存在时静默忽略
+        Args:
+            job_id: 任务 ID
+            changes: 要更新的字段值对
+        """
+        with self._rebuild_jobs_lock:
+            job = self._rebuild_jobs.get(job_id)
+            if job is None:
+                return
+            job.update(changes)
+
+    @staticmethod
+    def _utc_now() -> str:
+        """返回 ISO-8601 UTC 时间戳"""
+        return datetime.now(timezone.utc).isoformat()
 
     async def ask_stream(
         self,
