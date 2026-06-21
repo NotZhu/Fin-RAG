@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  archiveKnowledgeBase,
   askQuestionStream,
   createKnowledgeBase,
+  deleteKnowledgeBase,
   deleteDocument,
   getKnowledgeBaseReady,
   getKnowledgeBaseRebuildJob,
@@ -10,6 +12,7 @@ import {
   listDocuments,
   rebuildKnowledgeBase,
   reindexDocument,
+  restoreKnowledgeBase,
   uploadDocument,
   warmupKnowledgeBase,
 } from "./client";
@@ -252,8 +255,11 @@ describe("knowledge base client", () => {
               {
                 knowledge_base_id: "finance",
                 document_count: 1,
+                status: "active",
                 created_at: "2026-06-18T00:00:00+00:00",
                 updated_at: "2026-06-18T00:00:00+00:00",
+                archived_at: null,
+                deleted_at: null,
               },
             ],
           }),
@@ -281,8 +287,11 @@ describe("knowledge base client", () => {
           JSON.stringify({
             knowledge_base_id: "risk",
             document_count: 0,
+            status: "active",
             created_at: "2026-06-18T00:01:00+00:00",
             updated_at: "2026-06-18T00:01:00+00:00",
+            archived_at: null,
+            deleted_at: null,
           }),
           { headers: { "Content-Type": "application/json" } },
         ),
@@ -295,6 +304,40 @@ describe("knowledge base client", () => {
     expect(observedMethod).toBe("POST");
     expect(JSON.parse(observedBody)).toEqual({ knowledge_base_id: "risk" });
     expect(result.knowledge_base_id).toBe("risk");
+  });
+
+  test("archives restores and deletes a scoped knowledge base", async () => {
+    const payload = {
+      knowledge_base_id: "risk",
+      document_count: 0,
+      status: "archived",
+      created_at: "2026-06-18T00:01:00+00:00",
+      updated_at: "2026-06-18T00:02:00+00:00",
+      archived_at: "2026-06-18T00:02:00+00:00",
+      deleted_at: null,
+    };
+    const observed: Array<{ input: string; method: string }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      observed.push({
+        input: String(input),
+        method: String(init?.method ?? "GET"),
+      });
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+
+    await archiveKnowledgeBase("risk");
+    await restoreKnowledgeBase("risk");
+    await deleteKnowledgeBase("risk");
+
+    expect(observed).toEqual([
+      { input: "/knowledge-bases/risk/archive", method: "POST" },
+      { input: "/knowledge-bases/risk/restore", method: "POST" },
+      { input: "/knowledge-bases/risk", method: "DELETE" },
+    ]);
   });
 });
 

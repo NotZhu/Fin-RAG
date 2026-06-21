@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, status
 from finrag.api.errors import _build_error_response
 from finrag.api.rag_service import RAGService
 from finrag.core.config import validate_knowledge_base_id
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 
 def register_rebuild_routes(app: FastAPI, service: RAGService) -> None:
@@ -59,7 +60,17 @@ def register_rebuild_routes(app: FastAPI, service: RAGService) -> None:
                 request_id=request_id,
                 status_code=422,
             )
-        return service.start_rebuild(resolved_knowledge_base_id)
+        try:
+            # 开始重建任务
+            return service.start_rebuild(resolved_knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 处理知识库已归档
+            return _build_error_response(
+                code="knowledge_base_archived",
+                message=f"知识库 {resolved_knowledge_base_id!r} 已归档",
+                request_id=request_id,
+                status_code=409,
+            )
 
     @app.get("/knowledge-bases/{knowledge_base_id}/rebuilds/{job_id}")
     def get_knowledge_base_rebuild(knowledge_base_id: str, job_id: str, request: Request):

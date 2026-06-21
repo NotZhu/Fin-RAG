@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from finrag.api.errors import _build_error_response
 from finrag.api.rag_service import RAGService
 from finrag.core.config import validate_knowledge_base_id
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 
 def register_health_routes(app: FastAPI, service: RAGService) -> None:
@@ -79,4 +80,13 @@ def register_health_routes(app: FastAPI, service: RAGService) -> None:
                 request_id=request_id,
                 status_code=422,
             )
-        return service.warmup(resolved_knowledge_base_id)
+        try:
+            return service.warmup(resolved_knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 知识库已归档
+            return _build_error_response(
+                code="knowledge_base_archived",
+                message=f"知识库 {resolved_knowledge_base_id!r} 已归档",
+                request_id=request_id,
+                status_code=409,
+            )

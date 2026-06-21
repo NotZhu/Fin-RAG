@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections import Counter
 from pathlib import Path
 from threading import RLock
@@ -25,12 +26,15 @@ from finrag.indexing import (
     IndexConstructionModule,
 )
 from finrag.storage import (
+    KnowledgeBaseArchivedError,
+    KnowledgeBaseNotFoundError,
     PostgreSQLBM25StateStore,
     PostgreSQLIndexManifestStore,
     PostgreSQLKnowledgeBaseRegistry,
     PostgreSQLLlamaIndexDocumentStore,
+    ProtectedKnowledgeBaseError,
 )
-from finrag.ingestion import DocumentRecord, PostgreSQLDocumentRegistry, compute_content_hash
+from finrag.ingestion import DocumentRecord, PostgreSQLDocumentRegistry, compute_content_hash, is_path_within
 from finrag.ingestion.parsers import utc_now_iso
 from finrag.retrieval import build_reranker
 from finrag.retrieval.tokenization import tokenize_chinese_text
@@ -56,6 +60,7 @@ def _load_environment(project_root: Path = PROJECT_ROOT) -> None:
 _load_environment() # 加载环境变量
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s") # 配置日志记录
 logging.getLogger("jieba").setLevel(logging.WARNING) # 设置 jieba 日志级别为 WARNING
+logger = logging.getLogger(__name__)
 
 
 class FinRAGSystem:
@@ -160,6 +165,9 @@ class FinRAGSystem:
         if knowledge_base_id is None:
             self.knowledge_base.ensure_knowledge_base_ready()
             return
+        # 确保知识库已激活
+        self._ensure_knowledge_base_active(knowledge_base_id)
+        # 确保知识库已构建
         self.knowledge_base.ensure_knowledge_base_ready(knowledge_base_id)
 
     def rebuild_from_sources(self, knowledge_base_id: str) -> dict:
@@ -170,6 +178,8 @@ class FinRAGSystem:
         Returns:
             重建摘要，供 CLI 和运维任务展示
         """
+        # 确保知识库已激活
+        self._ensure_knowledge_base_active(knowledge_base_id)
         return self.knowledge_base.rebuild_from_sources(knowledge_base_id)
 
     def ready(self, knowledge_base_id: str | None = None) -> dict:
@@ -282,6 +292,164 @@ class FinRAGSystem:
         self.knowledge_base_scope(record.knowledge_base_id).source_root.mkdir(parents=True, exist_ok=True)
         return record.to_dict(document_count=0)
 
+    def archive_knowledge_base(self, knowledge_base_id: str) -> dict:
+        """
+        归档知识库，保留文档、索引和源文件，但禁止问答和写入操作
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            归档后的知识库公开记录
+        """
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
+        self._ensure_not_default_knowledge_base(knowledge_base_id)
+        with self._write_lock:
+            # 归档知识库
+            record = self.knowledge_base_registry.archive(knowledge_base_id)
+            # 丢弃知识库运行时缓存
+            self._discard_knowledge_base_runtime(knowledge_base_id)
+            return record.to_dict(document_count=self._knowledge_base_document_count(knowledge_base_id))
+
+    def restore_knowledge_base(self, knowledge_base_id: str) -> dict:
+        """
+        恢复已归档知识库
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            恢复后的知识库公开记录
+        """
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
+        with self._write_lock:
+            # 恢复知识库
+            record = self.knowledge_base_registry.restore(knowledge_base_id)
+            # 确保知识库源文件目录存在
+            self.knowledge_base_scope(knowledge_base_id).source_root.mkdir(parents=True, exist_ok=True)
+            return record.to_dict(document_count=self._knowledge_base_document_count(knowledge_base_id))
+
+    def delete_knowledge_base(self, knowledge_base_id: str) -> dict:
+        """
+        删除知识库及其托管源文件、文档记录、BM25、docstore、manifest 和运行时缓存
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            删除后的知识库公开记录
+        """
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
+        self._ensure_not_default_knowledge_base(knowledge_base_id)
+        with self._write_lock:
+            # 确保知识库存在
+            if self.knowledge_base_registry.get_optional(knowledge_base_id, include_deleted=True) is None:
+                raise KnowledgeBaseNotFoundError(knowledge_base_id)
+            # 删除知识库中的所有文档
+            for record in list(self.document_registry.records.values()):
+                if record.knowledge_base_id == knowledge_base_id and record.status != "deleted":
+                    self.document_registry.mark_deleted(record.document_id)
+            # 删除知识库索引
+            if self.bm25_store is not None:
+                self.bm25_store.clear(knowledge_base_id)
+            # 删除知识库文档存储
+            if self.llama_docstore is not None:
+                if hasattr(self.llama_docstore, "delete_knowledge_base"):
+                    self.llama_docstore.delete_knowledge_base(knowledge_base_id)
+                else:
+                    for record in list(self.document_registry.records.values()):
+                        if record.knowledge_base_id == knowledge_base_id:
+                            self.llama_docstore.delete_nodes_by_document(record.document_id, knowledge_base_id)
+            # 删除知识库manifest
+            if hasattr(self.manifest_store, "delete_manifest"):
+                self.manifest_store.delete_manifest(knowledge_base_id)
+            # 删除知识库源目录和待处理目录
+            self._delete_knowledge_base_source_dirs(knowledge_base_id)
+            # 删除丢弃知识库运行时缓存
+            self._discard_knowledge_base_runtime(knowledge_base_id)
+            record = self.knowledge_base_registry.mark_deleted(knowledge_base_id)
+            return record.to_dict(document_count=0)
+
+    def _knowledge_base_document_count(self, knowledge_base_id: str) -> int:
+        """
+        统计知识库中未删除文档数量
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            未删除文档数量
+        """
+        return sum(
+            1
+            for record in self.document_registry.records.values()
+            if record.knowledge_base_id == knowledge_base_id and record.status != "deleted"
+        )
+
+    def _ensure_not_default_knowledge_base(self, knowledge_base_id: str) -> None:
+        """
+        校验知识库是否为默认知识库
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
+        if knowledge_base_id == self.config.knowledge_base_id:
+            # 处理默认知识库保护
+            raise ProtectedKnowledgeBaseError(knowledge_base_id)
+
+    def _ensure_knowledge_base_active(self, knowledge_base_id: str) -> None:
+        """
+        校验知识库是否可执行业务操作
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        record = self.knowledge_base_registry.get_optional(knowledge_base_id, include_deleted=True)
+        # 确保知识库存在
+        if record is None:
+            record = self.knowledge_base_registry.ensure_default(knowledge_base_id)
+        # 校验知识库是否已删除
+        if record.status == "deleted":
+            raise KnowledgeBaseNotFoundError(knowledge_base_id)
+        # 校验知识库是否已归档
+        if record.status == "archived":
+            raise KnowledgeBaseArchivedError(knowledge_base_id)
+
+    def ensure_knowledge_base_active(self, knowledge_base_id: str) -> None:
+        """
+        对外校验知识库是否可执行业务操作
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        self._ensure_knowledge_base_active(knowledge_base_id)
+
+    def _discard_knowledge_base_runtime(self, knowledge_base_id: str) -> None:
+        """
+        丢弃知识库运行时缓存
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        knowledge_base_id = self.knowledge_base_scope(knowledge_base_id).knowledge_base_id
+        scope = self.knowledge_base_scope(knowledge_base_id)
+        runtime = getattr(self, "kb_runtimes", {}).pop(scope.runtime_cache_key, None)
+        if runtime is not None and getattr(self, "_active_runtime_key", None) == scope.runtime_cache_key:
+            self._active_runtime_key = None
+            self.data_module = None
+            self.index_module = None
+            self.generation_module = None
+            self.knowledge_query_engine = None
+            self.auto_merge_retriever = None
+            self.hybrid_retriever = None
+            self.summary_index = None
+            self.router_engine = None
+
+    def _delete_knowledge_base_source_dirs(self, knowledge_base_id: str) -> None:
+        """
+        删除知识库源目录
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        data_root = Path(self.config.data_path)
+        scope = self.knowledge_base_scope(knowledge_base_id)
+        # 删除知识库源目录和待处理目录
+        for path in [scope.source_root, data_root / ".pending" / knowledge_base_id]:
+            if not is_path_within(path, data_root):
+                logger.warning("跳过删除托管目录外的知识库源目录: %s", path)
+                continue
+            if path.exists():
+                shutil.rmtree(path)
+
     def _sync_knowledge_bases_from_documents(self) -> None:
         """
         将既有文档注册表中的知识库补入知识库注册表
@@ -344,6 +512,7 @@ class FinRAGSystem:
         Returns:
             文档注册记录的公开字典
         """
+        self._ensure_knowledge_base_active(knowledge_base_id)
         return self.document_lifecycle.prepare_uploaded_file(file_path, filename, knowledge_base_id)
 
     def index_registered_document(self, document_id: str) -> dict:
@@ -354,6 +523,14 @@ class FinRAGSystem:
         Returns:
             更新后的文档公开状态
         """
+        try:
+            # 获取文档注册记录
+            record = self.document_registry.get(document_id)
+        except KeyError:
+            record = None
+        if record is not None:
+            # 确保知识库存在
+            self._ensure_knowledge_base_active(record.knowledge_base_id)
         return self.document_lifecycle.index_registered_document(document_id)
 
     def ingest_uploaded_file(
@@ -371,6 +548,7 @@ class FinRAGSystem:
         Returns:
             索引完成后的文档公开状态
         """
+        self._ensure_knowledge_base_active(knowledge_base_id)
         return self.document_lifecycle.ingest_uploaded_file(file_path, filename, knowledge_base_id)
 
     def delete_document(self, document_id: str, knowledge_base_id: str) -> dict:
@@ -382,6 +560,7 @@ class FinRAGSystem:
         Returns:
             删除后的文档公开状态
         """
+        self._ensure_knowledge_base_active(knowledge_base_id)
         return self.document_lifecycle.delete_document(
             document_id,
             self.knowledge_base_scope(knowledge_base_id).knowledge_base_id,
@@ -396,6 +575,7 @@ class FinRAGSystem:
         Returns:
             重建后的文档公开状态
         """
+        self._ensure_knowledge_base_active(knowledge_base_id)
         return self.document_lifecycle.reindex_document(
             document_id,
             self.knowledge_base_scope(knowledge_base_id).knowledge_base_id,

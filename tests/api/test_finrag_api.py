@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from finrag.api import create_app
 from finrag.core.response_schema import FinRAGResponse, RetrievedSource
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 
 def parse_sse_events(body: str):
@@ -142,6 +143,20 @@ class FakeMissingDocumentSystem(FakeFinRAGSystem):
 class FakeFailingIngestSystem(FakeFinRAGSystem):
     def ingest_uploaded_file(self, file_path: Path, filename: str, knowledge_base_id: str):
         raise RuntimeError("索引失败")
+
+
+class FakeArchivedKnowledgeBaseSystem(FakeFinRAGSystem):
+    def ingest_uploaded_file(self, file_path: Path, filename: str, knowledge_base_id: str):
+        raise KnowledgeBaseArchivedError(knowledge_base_id)
+
+    def prepare_uploaded_file(self, file_path: Path, filename: str, knowledge_base_id: str):
+        raise KnowledgeBaseArchivedError(knowledge_base_id)
+
+    def delete_document(self, document_id: str, knowledge_base_id: str):
+        raise KnowledgeBaseArchivedError(knowledge_base_id)
+
+    def reindex_document(self, document_id: str, knowledge_base_id: str):
+        raise KnowledgeBaseArchivedError(knowledge_base_id)
 
 
 def test_removed_document_lifecycle_routes_are_not_registered(tmp_path):
@@ -390,6 +405,25 @@ def test_upload_rejects_invalid_knowledge_base_id_before_storing_file(tmp_path):
     assert upload.status_code == 400
     assert upload.json()["error"]["code"] == "invalid_knowledge_base_id"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_archived_knowledge_base_document_mutations_return_conflict(tmp_path):
+    app = create_app(system_factory=FakeArchivedKnowledgeBaseSystem, upload_dir=tmp_path)
+    client = TestClient(app)
+
+    upload = client.post(
+        "/knowledge-bases/risk/documents/upload",
+        files={"file": ("policy.md", b"# policy\ncontent", "text/markdown")},
+    )
+    deleted = client.delete("/knowledge-bases/risk/documents/doc-1")
+    reindexed = client.post("/knowledge-bases/risk/documents/doc-1/reindex")
+
+    assert upload.status_code == 409
+    assert upload.json()["error"]["code"] == "knowledge_base_archived"
+    assert deleted.status_code == 409
+    assert deleted.json()["error"]["code"] == "knowledge_base_archived"
+    assert reindexed.status_code == 409
+    assert reindexed.json()["error"]["code"] == "knowledge_base_archived"
 
 
 def test_upload_accepts_supported_file_and_rejects_unsupported_suffix(tmp_path):

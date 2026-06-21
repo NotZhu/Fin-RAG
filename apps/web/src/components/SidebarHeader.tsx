@@ -133,8 +133,10 @@ export function SidebarHeader({
                       onKnowledgeBaseChange(knowledgeBase.knowledge_base_id);
                     }}
                   >
-                    <span>{knowledgeBase.knowledge_base_id}</span>
-                    {selected ? <Check size={14} /> : null}
+                    <span>
+                      {knowledgeBase.knowledge_base_id}
+                      {knowledgeBase.status === "archived" ? " (已归档)" : null}
+                    </span>
                   </button>
                 );
               })}

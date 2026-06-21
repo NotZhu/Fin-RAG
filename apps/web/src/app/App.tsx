@@ -7,8 +7,10 @@ import {
   KnowledgeBaseRecord,
   PipelineStep,
   RebuildJobResponse,
+  archiveKnowledgeBase as archiveKnowledgeBaseApi,
   askQuestionStream,
   createKnowledgeBase as createKnowledgeBaseApi,
+  deleteKnowledgeBase as deleteKnowledgeBaseApi,
   deleteDocument as deleteDocumentApi,
   getKnowledgeBaseRebuildJob,
   getKnowledgeBaseReady,
@@ -16,6 +18,7 @@ import {
   listDocuments,
   rebuildKnowledgeBase as rebuildKnowledgeBaseApi,
   reindexDocument as reindexDocumentApi,
+  restoreKnowledgeBase as restoreKnowledgeBaseApi,
   uploadDocument,
   warmupKnowledgeBase as warmupKnowledgeBaseApi,
 } from "../api/client";
@@ -69,9 +72,26 @@ function upsertStep(steps: PipelineStep[], step: PipelineStep) {
 
 const REBUILD_POLL_INTERVAL_MS = 1200;
 const REBUILD_POLL_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_KNOWLEDGE_BASE_ID = "finance";
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function isActiveKnowledgeBase(record: KnowledgeBaseRecord | undefined) {
+  return Boolean(record && record.status === "active");
+}
+
+function chooseKnowledgeBase(
+  records: KnowledgeBaseRecord[],
+  preferredId: string,
+) {
+  return (
+    records.find((item) => item.knowledge_base_id === preferredId)?.knowledge_base_id ??
+    records.find((item) => item.status === "active")?.knowledge_base_id ??
+    records[0]?.knowledge_base_id ??
+    preferredId
+  );
 }
 
 async function waitForRebuildCompletion(
@@ -111,6 +131,7 @@ function App() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [rebuildBusy, setRebuildBusy] = useState(false);
   const [warmupBusy, setWarmupBusy] = useState(false);
+  const [knowledgeBaseActionBusy, setKnowledgeBaseActionBusy] = useState(false);
   const [reindexingDocId, setReindexingDocId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [response, setResponse] = useState<AskResponse | null>(null);
@@ -125,6 +146,7 @@ function App() {
   const currentKnowledgeBase = knowledgeBases.find(
     (item) => item.knowledge_base_id === knowledgeBaseId,
   );
+  const currentKnowledgeBaseIsActive = isActiveKnowledgeBase(currentKnowledgeBase);
 
   function handleClearConversation() {
     setSubmittedQuestion("");
@@ -191,7 +213,16 @@ function App() {
     }
   }
 
-  function warmupKnowledgeBaseInBackground(nextKnowledgeBaseId: string) {
+  function warmupKnowledgeBaseInBackground(
+    nextKnowledgeBaseId: string,
+    records = knowledgeBases,
+  ) {
+    const target = records.find(
+      (item) => item.knowledge_base_id === nextKnowledgeBaseId,
+    );
+    if (target && target.status !== "active") {
+      return;
+    }
     if (!nextKnowledgeBaseId || warmedKnowledgeBasesRef.current.has(nextKnowledgeBaseId)) {
       return;
     }
@@ -202,7 +233,7 @@ function App() {
   }
 
   async function handleWarmupKnowledgeBase() {
-    if (!knowledgeBaseId || warmupBusy) {
+    if (!knowledgeBaseId || warmupBusy || !currentKnowledgeBaseIsActive) {
       return;
     }
     const targetKnowledgeBaseId = knowledgeBaseId;
@@ -223,7 +254,7 @@ function App() {
   }
 
   async function handleRebuildKnowledgeBase() {
-    if (!knowledgeBaseId || rebuildBusy) {
+    if (!knowledgeBaseId || rebuildBusy || !currentKnowledgeBaseIsActive) {
       return;
     }
     const targetKnowledgeBaseId = knowledgeBaseId;
@@ -264,14 +295,19 @@ function App() {
     setError("");
     try {
       const nextKnowledgeBases = await refreshKnowledgeBases();
-      const initialKnowledgeBaseId = nextKnowledgeBases.some(
-        (item) => item.knowledge_base_id === "finance",
-      )
-        ? "finance"
-        : (nextKnowledgeBases[0]?.knowledge_base_id ?? "finance");
+      const initialKnowledgeBaseId = chooseKnowledgeBase(
+        nextKnowledgeBases,
+        DEFAULT_KNOWLEDGE_BASE_ID,
+      );
       setKnowledgeBaseId(initialKnowledgeBaseId);
       await refreshReady(initialKnowledgeBaseId);
-      warmupKnowledgeBaseInBackground(initialKnowledgeBaseId);
+      if (
+        nextKnowledgeBases.find(
+          (item) => item.knowledge_base_id === initialKnowledgeBaseId,
+        )?.status === "active"
+      ) {
+        warmupKnowledgeBaseInBackground(initialKnowledgeBaseId, nextKnowledgeBases);
+      }
     } catch (caught) {
       setError(errorMessage(caught, "无法连接后端服务。"));
     }
@@ -286,7 +322,12 @@ function App() {
     setKnowledgeBaseId(nextKnowledgeBaseId);
     try {
       await refreshDocuments(nextKnowledgeBaseId);
-      warmupKnowledgeBaseInBackground(nextKnowledgeBaseId);
+      const target = knowledgeBases.find(
+        (item) => item.knowledge_base_id === nextKnowledgeBaseId,
+      );
+      if (!target || target.status === "active") {
+        warmupKnowledgeBaseInBackground(nextKnowledgeBaseId);
+      }
     } catch (caught) {
       setError(errorMessage(caught, "无法加载知识库文档。"));
     }
@@ -303,20 +344,26 @@ function App() {
     setError("");
     try {
       const nextKnowledgeBases = await refreshKnowledgeBases();
-      const nextKnowledgeBaseId = nextKnowledgeBases.some(
-        (item) => item.knowledge_base_id === knowledgeBaseId,
-      )
-        ? knowledgeBaseId
-        : (nextKnowledgeBases[0]?.knowledge_base_id ?? knowledgeBaseId);
+      const nextKnowledgeBaseId = chooseKnowledgeBase(nextKnowledgeBases, knowledgeBaseId);
       setKnowledgeBaseId(nextKnowledgeBaseId);
       await refreshReady(nextKnowledgeBaseId);
-      warmupKnowledgeBaseInBackground(nextKnowledgeBaseId);
+      if (
+        nextKnowledgeBases.find(
+          (item) => item.knowledge_base_id === nextKnowledgeBaseId,
+        )?.status === "active"
+      ) {
+        warmupKnowledgeBaseInBackground(nextKnowledgeBaseId, nextKnowledgeBases);
+      }
     } catch (caught) {
       setError(errorMessage(caught, "无法加载知识库列表。"));
     }
   }
 
   async function handleUpload() {
+    if (!currentKnowledgeBaseIsActive) {
+      setError("知识库已归档，恢复后才能上传文档。");
+      return;
+    }
     if (!selectedFile) {
       setError("请选择要上传的金融文档。");
       return;
@@ -340,6 +387,10 @@ function App() {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) {
       setError("请输入问题。");
+      return;
+    }
+    if (!currentKnowledgeBaseIsActive) {
+      setError("知识库已归档，恢复后才能提问。");
       return;
     }
 
@@ -431,6 +482,77 @@ function App() {
     setAnswerBusy(false);
   }
 
+  async function handleArchiveKnowledgeBase() {
+    if (!knowledgeBaseId || knowledgeBaseActionBusy || currentKnowledgeBase?.status !== "active") {
+      return;
+    }
+    setKnowledgeBaseActionBusy(true);
+    setError("");
+    try {
+      await archiveKnowledgeBaseApi(knowledgeBaseId);
+      warmedKnowledgeBasesRef.current.delete(knowledgeBaseId);
+      await refreshKnowledgeBases();
+    } catch (caught) {
+      setError(errorMessage(caught, "归档知识库失败。"));
+    } finally {
+      setKnowledgeBaseActionBusy(false);
+    }
+  }
+
+  async function handleRestoreKnowledgeBase() {
+    if (!knowledgeBaseId || knowledgeBaseActionBusy) {
+      return;
+    }
+    const targetKnowledgeBaseId = knowledgeBaseId;
+    setKnowledgeBaseActionBusy(true);
+    setError("");
+    try {
+      await restoreKnowledgeBaseApi(targetKnowledgeBaseId);
+      const nextKnowledgeBases = await refreshKnowledgeBases();
+      if (knowledgeBaseIdRef.current === targetKnowledgeBaseId) {
+        await refreshReady(targetKnowledgeBaseId);
+        warmupKnowledgeBaseInBackground(targetKnowledgeBaseId, nextKnowledgeBases);
+      }
+    } catch (caught) {
+      setError(errorMessage(caught, "恢复知识库失败。"));
+    } finally {
+      setKnowledgeBaseActionBusy(false);
+    }
+  }
+
+  async function handleDeleteKnowledgeBase() {
+    if (!knowledgeBaseId || knowledgeBaseActionBusy) {
+      return;
+    }
+    const deletedKnowledgeBaseId = knowledgeBaseId;
+    setKnowledgeBaseActionBusy(true);
+    setError("");
+    try {
+      await deleteKnowledgeBaseApi(deletedKnowledgeBaseId);
+      warmedKnowledgeBasesRef.current.delete(deletedKnowledgeBaseId);
+      const nextKnowledgeBases = await refreshKnowledgeBases();
+      const nextKnowledgeBaseId = chooseKnowledgeBase(
+        nextKnowledgeBases,
+        DEFAULT_KNOWLEDGE_BASE_ID,
+      );
+      handleClearConversation();
+      setSelectedFile(null);
+      setKnowledgeBaseId(nextKnowledgeBaseId);
+      await refreshReady(nextKnowledgeBaseId);
+      if (
+        nextKnowledgeBases.find(
+          (item) => item.knowledge_base_id === nextKnowledgeBaseId,
+        )?.status === "active"
+      ) {
+        warmupKnowledgeBaseInBackground(nextKnowledgeBaseId, nextKnowledgeBases);
+      }
+    } catch (caught) {
+      setError(errorMessage(caught, "删除知识库失败。"));
+    } finally {
+      setKnowledgeBaseActionBusy(false);
+    }
+  }
+
   useEffect(() => {
     void initializeApp();
   }, []);
@@ -471,7 +593,7 @@ function App() {
             collapsed={isSidebarCollapsed}
             selectedFile={selectedFile}
             uploadBusy={uploadBusy}
-            uploadDisabled={answerBusy}
+            uploadDisabled={answerBusy || !currentKnowledgeBaseIsActive}
             onSelectedFileChange={setSelectedFile}
             onUpload={handleUpload}
           />
@@ -492,16 +614,19 @@ function App() {
           knowledgeBaseId={knowledgeBaseId}
           knowledgeBaseIsAvailable={Boolean(currentKnowledgeBase)}
           knowledgeBaseLoadState={knowledgeBaseLoadState}
+          knowledgeBaseStatus={currentKnowledgeBase?.status ?? ""}
           knowledgeBaseUpdatedAt={currentKnowledgeBase?.updated_at ?? ""}
+          isDefaultKnowledgeBase={knowledgeBaseId === DEFAULT_KNOWLEDGE_BASE_ID}
           question={question}
           response={response}
           streamedAnswer={streamedAnswer}
           submittedQuestion={submittedQuestion}
-          submitDisabled={uploadBusy}
+          submitDisabled={uploadBusy || !currentKnowledgeBaseIsActive}
           totalDocuments={totalDocuments}
           totalChunks={totalChunks}
           rebuildBusy={rebuildBusy}
           warmupBusy={warmupBusy}
+          knowledgeBaseActionBusy={knowledgeBaseActionBusy}
           onAbort={handleAbortAnswer}
           onClearConversation={handleClearConversation}
           onNewChat={handleClearConversation}
@@ -512,6 +637,9 @@ function App() {
           onDeleteDocument={deleteDocument}
           onCreateKnowledgeBase={(nextId) => void createKnowledgeBase(nextId)}
           onRebuildKnowledgeBase={() => void handleRebuildKnowledgeBase()}
+          onArchiveKnowledgeBase={() => void handleArchiveKnowledgeBase()}
+          onRestoreKnowledgeBase={() => void handleRestoreKnowledgeBase()}
+          onDeleteKnowledgeBase={() => void handleDeleteKnowledgeBase()}
           onWarmupKnowledgeBase={() => void handleWarmupKnowledgeBase()}
           reindexingDocId={reindexingDocId}
         />

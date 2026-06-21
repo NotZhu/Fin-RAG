@@ -19,7 +19,9 @@ type ChatPanelProps = {
   knowledgeBaseId: string;
   knowledgeBaseIsAvailable: boolean;
   knowledgeBaseLoadState: "loading" | "ready" | "error";
+  knowledgeBaseStatus: "active" | "archived" | "deleted" | "";
   knowledgeBaseUpdatedAt: string;
+  isDefaultKnowledgeBase: boolean;
   question: string;
   response: AskResponse | null;
   streamedAnswer: string;
@@ -29,6 +31,7 @@ type ChatPanelProps = {
   totalChunks: number;
   rebuildBusy: boolean;
   warmupBusy: boolean;
+  knowledgeBaseActionBusy: boolean;
   onAbort: () => void;
   onClearConversation: () => void;
   onNewChat: () => void;
@@ -40,6 +43,9 @@ type ChatPanelProps = {
   onCreateKnowledgeBase: (knowledgeBaseId: string) => void;
   onRebuildKnowledgeBase: () => void;
   onWarmupKnowledgeBase: () => void;
+  onArchiveKnowledgeBase: () => void;
+  onRestoreKnowledgeBase: () => void;
+  onDeleteKnowledgeBase: () => void;
   reindexingDocId: string | null;
 };
 
@@ -52,7 +58,9 @@ export function ChatPanel({
   knowledgeBaseId,
   knowledgeBaseIsAvailable,
   knowledgeBaseLoadState,
+  knowledgeBaseStatus,
   knowledgeBaseUpdatedAt,
+  isDefaultKnowledgeBase,
   question,
   response,
   streamedAnswer,
@@ -62,6 +70,7 @@ export function ChatPanel({
   totalChunks,
   rebuildBusy,
   warmupBusy,
+  knowledgeBaseActionBusy,
   onAbort,
   onClearConversation,
   onNewChat,
@@ -73,6 +82,9 @@ export function ChatPanel({
   onCreateKnowledgeBase,
   onRebuildKnowledgeBase,
   onWarmupKnowledgeBase,
+  onArchiveKnowledgeBase,
+  onRestoreKnowledgeBase,
+  onDeleteKnowledgeBase,
   reindexingDocId,
 }: ChatPanelProps) {
   const answer = streamedAnswer || response?.answer || "";
@@ -196,15 +208,21 @@ export function ChatPanel({
             knowledgeBaseId={knowledgeBaseId}
             knowledgeBaseIsAvailable={knowledgeBaseIsAvailable}
             knowledgeBaseLoadState={knowledgeBaseLoadState}
+            knowledgeBaseStatus={knowledgeBaseStatus}
             knowledgeBaseUpdatedAt={knowledgeBaseUpdatedAt}
+            isDefaultKnowledgeBase={isDefaultKnowledgeBase}
             onCreateKnowledgeBase={onCreateKnowledgeBase}
             onReindexDocument={onReindexDocument}
             onDeleteDocument={onDeleteDocument}
             onRebuildKnowledgeBase={onRebuildKnowledgeBase}
             onWarmupKnowledgeBase={onWarmupKnowledgeBase}
+            onArchiveKnowledgeBase={onArchiveKnowledgeBase}
+            onRestoreKnowledgeBase={onRestoreKnowledgeBase}
+            onDeleteKnowledgeBase={onDeleteKnowledgeBase}
             reindexingDocId={reindexingDocId}
             rebuildBusy={rebuildBusy}
             warmupBusy={warmupBusy}
+            knowledgeBaseActionBusy={knowledgeBaseActionBusy}
             totalDocuments={totalDocuments}
             totalChunks={totalChunks}
           />

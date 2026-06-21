@@ -1,4 +1,4 @@
-"""LlamaIndex-native retrieval helpers for FinRAG."""
+"""基于 LlamaIndex 原生检索的 FinRAG 检索器"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from finrag.retrieval.search import build_metadata_filters, _matches_filters
 
 
 class HybridRetrieverUnavailable(RuntimeError):
-    """Raised when Milvus native dense+sparse hybrid retrieval is not usable."""
+    """混合检索不可用异常"""
 
     def __init__(self, reason: str):
         self.code = "hybrid_retriever_unavailable"
@@ -59,6 +59,13 @@ class MilvusNativeHybridRetriever(BaseRetriever):
         super().__init__(callback_manager=callback_manager) # 初始化父类，设置回调管理器
 
     def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
+        """
+        执行混合检索
+        Args:
+            query_bundle: 查询包对象
+        Returns:
+            包含节点和分数的列表
+        """
         vector_store = self._ensure_sparse_vector_store()
         metadata_filters = build_metadata_filters(self.filters)
         kwargs: Dict[str, Any] = {

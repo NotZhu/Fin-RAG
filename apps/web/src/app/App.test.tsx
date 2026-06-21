@@ -21,14 +21,20 @@ const knowledgeBasesPayload = {
     {
       knowledge_base_id: "finance",
       document_count: 1,
+      status: "active",
       created_at: "2026-06-18T00:00:00+00:00",
       updated_at: "2026-06-18T00:00:00+00:00",
+      archived_at: null,
+      deleted_at: null,
     },
     {
       knowledge_base_id: "risk",
       document_count: 0,
+      status: "active",
       created_at: "2026-06-18T00:01:00+00:00",
       updated_at: "2026-06-18T00:01:00+00:00",
+      archived_at: null,
+      deleted_at: null,
     },
   ],
 };
@@ -601,6 +607,9 @@ describe("FinRAG chat interface", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "刷新知识库" }),
     );
+    const warmupMessage = await screen.findByText("确定要刷新 Finance 吗？");
+    const warmupDialog = warmupMessage.closest(".confirm-dialog") as HTMLElement;
+    await userEvent.click(within(warmupDialog).getByRole("button", { name: "刷新" }));
 
     await waitFor(() => {
       expect(
@@ -655,13 +664,13 @@ describe("FinRAG chat interface", () => {
     await screen.findByText("文档就绪，随时提问");
     await userEvent.click(screen.getByRole("button", { name: /文档/ }));
     expect(
-      screen.queryByRole("menuitem", { name: "全量重建知识库" }),
+      screen.queryByRole("menuitem", { name: "重建知识库" }),
     ).not.toBeInTheDocument();
     await userEvent.click(
       screen.getByRole("button", { name: "更多操作" }),
     );
     await userEvent.click(
-      screen.getByRole("menuitem", { name: "全量重建知识库" }),
+      screen.getByRole("menuitem", { name: "重建知识库" }),
     );
 
     const message = await screen.findByText("确定要全量重建 Finance 吗？");
@@ -672,7 +681,7 @@ describe("FinRAG chat interface", () => {
     );
     expect(within(dialog).getByRole("button", { name: "重建" })).toHaveClass(
       "confirm-btn",
-      "danger",
+      "dark",
     );
 
     await userEvent.click(within(dialog).getByRole("button", { name: "重建" }));
@@ -685,6 +694,100 @@ describe("FinRAG chat interface", () => {
     });
     const stats = document.querySelector(".kb-stats") as HTMLElement;
     expect(await within(stats).findByText("11")).toHaveClass("kb-stat-value");
+  });
+
+  test("archives and restores the current knowledge base from the more menu", async () => {
+    const archivedRisk = {
+      ...knowledgeBasesPayload.knowledge_bases[1],
+      status: "archived",
+      archived_at: "2026-06-18T00:03:00+00:00",
+    };
+    const activeRisk = {
+      ...knowledgeBasesPayload.knowledge_bases[1],
+      status: "active",
+      archived_at: null,
+    };
+    const archivedKnowledgeBases = {
+      knowledge_bases: [knowledgeBasesPayload.knowledge_bases[0], archivedRisk],
+    };
+    const restoredKnowledgeBases = {
+      knowledge_bases: [knowledgeBasesPayload.knowledge_bases[0], activeRisk],
+    };
+    const fetchMock = mockInitialLoad()
+      .mockResolvedValueOnce(jsonResponse({ documents: [] }))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse(archivedRisk))
+      .mockResolvedValueOnce(jsonResponse(archivedKnowledgeBases))
+      .mockResolvedValueOnce(jsonResponse(activeRisk))
+      .mockResolvedValueOnce(jsonResponse(restoredKnowledgeBases))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse({ documents: [] }));
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: "切换知识库 finance" }));
+    await userEvent.click(screen.getByRole("option", { name: "risk" }));
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+    await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "归档知识库" }));
+    await userEvent.click(screen.getByRole("button", { name: "归档" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/knowledge-bases/risk/archive",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(await screen.findByText("已归档")).toHaveClass("kb-status-pill");
+    expect(screen.getByRole("button", { name: "刷新知识库" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "恢复知识库" }));
+    await userEvent.click(screen.getByRole("button", { name: "恢复" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/knowledge-bases/risk/restore",
+      expect.objectContaining({ method: "POST" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("已归档")).not.toBeInTheDocument();
+    });
+  });
+
+  test("deletes the current knowledge base and falls back to finance", async () => {
+    const deletedRisk = {
+      ...knowledgeBasesPayload.knowledge_bases[1],
+      status: "deleted",
+      deleted_at: "2026-06-18T00:04:00+00:00",
+    };
+    const financeOnlyKnowledgeBases = {
+      knowledge_bases: [knowledgeBasesPayload.knowledge_bases[0]],
+    };
+    const fetchMock = mockInitialLoad()
+      .mockResolvedValueOnce(jsonResponse({ documents: [] }))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse(deletedRisk))
+      .mockResolvedValueOnce(jsonResponse(financeOnlyKnowledgeBases))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse(documentsPayload))
+      .mockResolvedValueOnce(jsonResponse(readyPayload));
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: "切换知识库 finance" }));
+    await userEvent.click(screen.getByRole("option", { name: "risk" }));
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+    await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除知识库" }));
+    await userEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/knowledge-bases/risk",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "切换知识库 finance" })).toBeInTheDocument();
+    });
   });
 
   test("places refresh before the more knowledge base actions", async () => {
@@ -743,8 +846,11 @@ describe("FinRAG chat interface", () => {
     const creditPayload = {
       knowledge_base_id: "credit",
       document_count: 0,
+      status: "active",
       created_at: "2026-06-18T00:02:00+00:00",
       updated_at: "2026-06-18T00:02:00+00:00",
+      archived_at: null,
+      deleted_at: null,
     };
     const updatedKnowledgeBases = {
       knowledge_bases: [...knowledgeBasesPayload.knowledge_bases, creditPayload],

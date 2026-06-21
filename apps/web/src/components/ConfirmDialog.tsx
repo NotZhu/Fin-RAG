@@ -5,7 +5,12 @@ export type ConfirmAction =
       filename: string;
     }
   | {
-      type: "rebuild";
+      type:
+        | "rebuild"
+        | "archiveKnowledgeBase"
+        | "restoreKnowledgeBase"
+        | "deleteKnowledgeBase"
+        | "warmup";
       knowledgeBaseName: string;
     };
 
@@ -20,15 +25,45 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  const isDelete = action.type === "delete";
-  const isRebuild = action.type === "rebuild";
-  const message = isRebuild
-    ? `确定要全量重建 ${action.knowledgeBaseName} 吗？`
-    : isDelete
-      ? `确定要删除「${action.filename}」吗？此操作不可撤销。`
-      : `确定要重新索引「${action.filename}」吗？`;
-  const confirmText = isRebuild ? "重建" : isDelete ? "删除" : "重新索引";
-  const confirmTone = isDelete || isRebuild ? "danger" : "primary";
+  let message = "";
+  let confirmText = "";
+  let confirmTone: "danger" | "primary" | "dark" = "primary";
+
+  switch (action.type) {
+    case "rebuild":
+      message = `确定要全量重建 ${action.knowledgeBaseName} 吗？`;
+      confirmText = "重建";
+      confirmTone = "dark";
+      break;
+    case "warmup":
+      message = `确定要刷新 ${action.knowledgeBaseName} 吗？`;
+      confirmText = "刷新";
+      confirmTone = "primary";
+      break;
+    case "archiveKnowledgeBase":
+      message = `确定要归档 ${action.knowledgeBaseName} 吗？`;
+      confirmText = "归档";
+      confirmTone = "dark";
+      break;
+    case "restoreKnowledgeBase":
+      message = `确定要恢复 ${action.knowledgeBaseName} 吗？`;
+      confirmText = "恢复";
+      break;
+    case "deleteKnowledgeBase":
+      message = `确定要删除 ${action.knowledgeBaseName} 吗？`;
+      confirmText = "删除";
+      confirmTone = "danger";
+      break;
+    case "delete":
+      message = `确定要删除「${action.filename}」吗？此操作不可撤销。`;
+      confirmText = "删除";
+      confirmTone = "danger";
+      break;
+    case "reindex":
+      message = `确定要重新索引「${action.filename}」吗？`;
+      confirmText = "重新索引";
+      break;
+  }
 
   return (
     <div className="confirm-overlay" onClick={onCancel}>

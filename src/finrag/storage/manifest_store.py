@@ -77,3 +77,13 @@ class PostgreSQLIndexManifestStore:
         if row is None:
             return None
         return json.loads(row[0]) # 解析 JSON 字符串为字典
+
+    def delete_manifest(self, knowledge_base_id: str) -> None:
+        """
+        删除指定知识库的索引清单
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        with self.db.connect() as conn:
+            # 删除指定知识库的索引清单记录
+            execute(conn, "DELETE FROM finrag_index_manifest WHERE knowledge_base_id = %s", (knowledge_base_id,))

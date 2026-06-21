@@ -37,8 +37,11 @@ export type DocumentRecord = {
 export type KnowledgeBaseRecord = {
   knowledge_base_id: string;
   document_count: number;
+  status: "active" | "archived" | "deleted";
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  deleted_at: string | null;
 };
 
 export type KnowledgeBasesResponse = {

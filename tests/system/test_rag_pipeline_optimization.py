@@ -288,13 +288,11 @@ def test_knowledge_unavailable_returns_structured_error(tmp_path):
 
 
 def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
-    system = FinRAGSystem(RAGConfig(data_path=str(tmp_path)))
-
     class NoFallbackGeneration(FakeGeneration):
         def analyze_query(self, question):
             raise AssertionError("router-only pipeline should not call analyze_query")
 
-    system.generation_module = NoFallbackGeneration()
+    system = _setup_knowledge_system(tmp_path, engine=None, generation=NoFallbackGeneration())
     events = []
 
     response = system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_trace=True, event_sink=events.append)

@@ -1,4 +1,4 @@
-"""Shared helpers for PostgreSQL storage adapters."""
+"""通用存储函数"""
 
 from __future__ import annotations
 

@@ -7,6 +7,7 @@ import {
   FileText,
   MoreHorizontal,
   Plus,
+  Archive,
   RefreshCcw,
   RefreshCw,
   Trash2,
@@ -22,15 +23,21 @@ type DocumentsPageProps = {
   knowledgeBaseId: string;
   knowledgeBaseIsAvailable: boolean;
   knowledgeBaseLoadState: "loading" | "ready" | "error";
+  knowledgeBaseStatus: "active" | "archived" | "deleted" | "";
   knowledgeBaseUpdatedAt: string;
+  isDefaultKnowledgeBase: boolean;
   onCreateKnowledgeBase: (knowledgeBaseId: string) => Promise<void> | void;
   onReindexDocument: (documentId: string) => void;
   onDeleteDocument: (documentId: string) => void;
   onRebuildKnowledgeBase: () => void;
   onWarmupKnowledgeBase: () => void;
+  onArchiveKnowledgeBase: () => void;
+  onRestoreKnowledgeBase: () => void;
+  onDeleteKnowledgeBase: () => void;
   reindexingDocId: string | null;
   rebuildBusy: boolean;
   warmupBusy: boolean;
+  knowledgeBaseActionBusy: boolean;
   totalDocuments: number;
   totalChunks: number;
 };
@@ -42,15 +49,21 @@ export function DocumentsPage({
   knowledgeBaseId,
   knowledgeBaseIsAvailable,
   knowledgeBaseLoadState,
+  knowledgeBaseStatus,
   knowledgeBaseUpdatedAt,
+  isDefaultKnowledgeBase,
   onCreateKnowledgeBase,
   onReindexDocument,
   onDeleteDocument,
   onRebuildKnowledgeBase,
   onWarmupKnowledgeBase,
+  onArchiveKnowledgeBase,
+  onRestoreKnowledgeBase,
+  onDeleteKnowledgeBase,
   reindexingDocId,
   rebuildBusy,
   warmupBusy,
+  knowledgeBaseActionBusy,
   totalDocuments,
   totalChunks,
 }: DocumentsPageProps) {
@@ -103,7 +116,9 @@ export function DocumentsPage({
         ? "加载失败"
         : "暂无知识库";
   const updatedAtText = formatUploadTime(knowledgeBaseUpdatedAt);
-  const runtimeActionBusy = warmupBusy || rebuildBusy;
+  const isArchived = knowledgeBaseStatus === "archived";
+  const runtimeActionBusy =
+    warmupBusy || rebuildBusy || knowledgeBaseActionBusy;
 
   return (
     <div className="docs-page">
@@ -112,6 +127,7 @@ export function DocumentsPage({
           <span className="kb-stat-kb-name">
             <span className="kb-stat-label">当前知识库：</span>
             <span className="kb-stat-value">{knowledgeBaseName}</span>
+            {isArchived ? <span className="kb-status-pill">已归档</span> : null}
           </span>
           <span className="kb-stat-divider">|</span>
           <div className="kb-stat-item">
@@ -149,11 +165,17 @@ export function DocumentsPage({
             disabled={
               runtimeActionBusy ||
               !knowledgeBaseIsAvailable ||
-              knowledgeBaseLoadState !== "ready"
+              knowledgeBaseLoadState !== "ready" ||
+              isArchived
             }
             title="刷新知识库"
             type="button"
-            onClick={onWarmupKnowledgeBase}
+            onClick={() => {
+              setPendingAction({
+                type: "warmup",
+                knowledgeBaseName,
+              });
+            }}
           >
             <RefreshCw className={warmupBusy ? "spin" : ""} size={16} />
           </button>
@@ -182,6 +204,7 @@ export function DocumentsPage({
               >
                 <button
                   className="kb-actions-menu-item danger"
+                  disabled={isArchived}
                   role="menuitem"
                   type="button"
                   onClick={() => {
@@ -193,7 +216,57 @@ export function DocumentsPage({
                   }}
                 >
                   <RefreshCcw className={rebuildBusy ? "spin" : ""} size={14} />
-                  <span>全量重建知识库</span>
+                  <span>重建知识库</span>
+                </button>
+                {isArchived ? (
+                  <button
+                    className="kb-actions-menu-item"
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setPendingAction({
+                        type: "restoreKnowledgeBase",
+                        knowledgeBaseName,
+                      });
+                      setIsActionsMenuOpen(false);
+                    }}
+                  >
+                    <RefreshCw size={14} />
+                    <span>恢复知识库</span>
+                  </button>
+                ) : (
+                  <button
+                    className="kb-actions-menu-item danger"
+                    disabled={isDefaultKnowledgeBase}
+                    role="menuitem"
+                    type="button"
+                    onClick={() => {
+                      setPendingAction({
+                        type: "archiveKnowledgeBase",
+                        knowledgeBaseName,
+                      });
+                      setIsActionsMenuOpen(false);
+                    }}
+                  >
+                    <Archive size={14} />
+                    <span>归档知识库</span>
+                  </button>
+                )}
+                <button
+                  className="kb-actions-menu-item danger"
+                  disabled={isDefaultKnowledgeBase}
+                  role="menuitem"
+                  type="button"
+                  onClick={() => {
+                    setPendingAction({
+                      type: "deleteKnowledgeBase",
+                      knowledgeBaseName,
+                    });
+                    setIsActionsMenuOpen(false);
+                  }}
+                >
+                  <Trash2 size={14} />
+                  <span>删除知识库</span>
                 </button>
               </div>
             ) : null}
@@ -230,7 +303,7 @@ export function DocumentsPage({
                 <div className="doc-actions">
                   <button
                     className="doc-action-btn"
-                    disabled={reindexingDocId === doc.document_id}
+                    disabled={isArchived || reindexingDocId === doc.document_id}
                     title="重新索引"
                     type="button"
                     onClick={() =>
@@ -250,6 +323,7 @@ export function DocumentsPage({
                   </button>
                   <button
                     className="doc-action-btn delete"
+                    disabled={isArchived}
                     title="删除"
                     type="button"
                     onClick={() =>
@@ -324,8 +398,16 @@ export function DocumentsPage({
               onReindexDocument(pendingAction.documentId);
             } else if (pendingAction.type === "delete") {
               onDeleteDocument(pendingAction.documentId);
-            } else {
+            } else if (pendingAction.type === "rebuild") {
               onRebuildKnowledgeBase();
+            } else if (pendingAction.type === "warmup") {
+              onWarmupKnowledgeBase();
+            } else if (pendingAction.type === "archiveKnowledgeBase") {
+              onArchiveKnowledgeBase();
+            } else if (pendingAction.type === "restoreKnowledgeBase") {
+              onRestoreKnowledgeBase();
+            } else {
+              onDeleteKnowledgeBase();
             }
             setPendingAction(null);
           }}

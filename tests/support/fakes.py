@@ -8,7 +8,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from finrag.core.node_schema import TextNode
 from finrag.ingestion import DocumentRecord
-from finrag.storage.knowledge_base_registry import DuplicateKnowledgeBaseError, KnowledgeBaseRecord
+from finrag.storage.knowledge_base_registry import (
+    DuplicateKnowledgeBaseError,
+    KnowledgeBaseNotFoundError,
+    KnowledgeBaseRecord,
+)
 from finrag.storage.protocols import SparseVector
 
 
@@ -156,6 +160,14 @@ class MemoryNodeStore:
     def clear(self) -> None:
         self.nodes.clear()
 
+    def delete_knowledge_base(self, knowledge_base_id: str) -> None:
+        for node_id in [
+            node_id
+            for node_id, node in self.nodes.items()
+            if str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
+        ]:
+            self.nodes.pop(node_id, None)
+
     def count_leaf_nodes(self, document_id: str) -> int:
         return sum(
             1
@@ -275,6 +287,9 @@ class MemoryIndexManifestStore:
         manifest = self.manifests.get(knowledge_base_id)
         return dict(manifest) if manifest is not None else None
 
+    def delete_manifest(self, knowledge_base_id: str) -> None:
+        self.manifests.pop(knowledge_base_id, None)
+
 
 class MemoryKnowledgeBaseRegistry:
     def __init__(self, database_url: str | None = None):
@@ -283,7 +298,19 @@ class MemoryKnowledgeBaseRegistry:
 
     def ensure_default(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
         if knowledge_base_id in self.records:
-            return self.records[knowledge_base_id]
+            record = self.records[knowledge_base_id]
+            if record.status == "deleted":
+                restored = KnowledgeBaseRecord(
+                    knowledge_base_id=record.knowledge_base_id,
+                    created_at=record.created_at,
+                    updated_at=_utc_now_iso(),
+                    status="active",
+                    archived_at=None,
+                    deleted_at=None,
+                )
+                self.records[knowledge_base_id] = restored
+                return restored
+            return record
         now = _utc_now_iso()
         record = KnowledgeBaseRecord(
             knowledge_base_id=knowledge_base_id,
@@ -305,8 +332,65 @@ class MemoryKnowledgeBaseRegistry:
         self.records[knowledge_base_id] = record
         return record
 
-    def list(self) -> List[KnowledgeBaseRecord]:
-        return sorted(self.records.values(), key=lambda item: (item.created_at, item.knowledge_base_id))
+    def list(self, *, include_deleted: bool = False) -> List[KnowledgeBaseRecord]:
+        records = self.records.values() if include_deleted else [
+            record for record in self.records.values() if record.status != "deleted"
+        ]
+        return sorted(records, key=lambda item: (item.created_at, item.knowledge_base_id))
 
-    def get_optional(self, knowledge_base_id: str) -> Optional[KnowledgeBaseRecord]:
-        return self.records.get(knowledge_base_id)
+    def get(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        record = self.get_optional(knowledge_base_id)
+        if record is None:
+            raise KnowledgeBaseNotFoundError(knowledge_base_id)
+        return record
+
+    def get_optional(self, knowledge_base_id: str, *, include_deleted: bool = False) -> Optional[KnowledgeBaseRecord]:
+        record = self.records.get(knowledge_base_id)
+        if record is not None and record.status == "deleted" and not include_deleted:
+            return None
+        return record
+
+    def archive(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        record = self.get(knowledge_base_id)
+        now = _utc_now_iso()
+        archived = KnowledgeBaseRecord(
+            knowledge_base_id=record.knowledge_base_id,
+            created_at=record.created_at,
+            updated_at=now,
+            status="archived",
+            archived_at=now,
+            deleted_at=None,
+        )
+        self.records[knowledge_base_id] = archived
+        return archived
+
+    def restore(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        record = self.get_optional(knowledge_base_id, include_deleted=True)
+        if record is None or record.status == "deleted":
+            raise KnowledgeBaseNotFoundError(knowledge_base_id)
+        restored = KnowledgeBaseRecord(
+            knowledge_base_id=record.knowledge_base_id,
+            created_at=record.created_at,
+            updated_at=_utc_now_iso(),
+            status="active",
+            archived_at=None,
+            deleted_at=None,
+        )
+        self.records[knowledge_base_id] = restored
+        return restored
+
+    def mark_deleted(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        record = self.get_optional(knowledge_base_id, include_deleted=True)
+        if record is None:
+            raise KnowledgeBaseNotFoundError(knowledge_base_id)
+        now = _utc_now_iso()
+        deleted = KnowledgeBaseRecord(
+            knowledge_base_id=record.knowledge_base_id,
+            created_at=record.created_at,
+            updated_at=now,
+            status="deleted",
+            archived_at=record.archived_at,
+            deleted_at=now,
+        )
+        self.records[knowledge_base_id] = deleted
+        return deleted

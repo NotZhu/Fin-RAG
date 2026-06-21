@@ -5,9 +5,11 @@ from .bm25_store import PostgreSQLBM25StateStore
 from .document_registry import PostgreSQLDocumentRegistry
 from .knowledge_base_registry import (
     DuplicateKnowledgeBaseError,
+    KnowledgeBaseArchivedError,
     KnowledgeBaseNotFoundError,
     KnowledgeBaseRecord,
     PostgreSQLKnowledgeBaseRegistry,
+    ProtectedKnowledgeBaseError,
 )
 from .llama_docstore import PostgreSQLLlamaIndexDocumentStore
 from .manifest_store import PostgreSQLIndexManifestStore
@@ -17,6 +19,7 @@ __all__ = [
     "DocumentRegistryStore",
     "DuplicateKnowledgeBaseError",
     "IndexManifestStore",
+    "KnowledgeBaseArchivedError",
     "KnowledgeBaseNotFoundError",
     "KnowledgeBaseRecord",
     "NodeStore",
@@ -25,5 +28,6 @@ __all__ = [
     "PostgreSQLIndexManifestStore",
     "PostgreSQLKnowledgeBaseRegistry",
     "PostgreSQLLlamaIndexDocumentStore",
+    "ProtectedKnowledgeBaseError",
     "SparseVector",
 ]

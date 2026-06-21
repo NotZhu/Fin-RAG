@@ -179,6 +179,40 @@ class PostgreSQLLlamaIndexDocumentStore(BaseDocumentStore):
             # 删除指定文档的所有参考文档记录
             execute(conn, "DELETE FROM finrag_ref_docs WHERE ref_doc_id = %s", (document_id,))
 
+    def delete_knowledge_base(self, knowledge_base_id: str) -> None:
+        """
+        删除指定知识库的所有分块、参考文档和哈希记录
+        Args:
+            knowledge_base_id: 知识库 ID
+        """
+        with self.db.connect() as conn:
+            # 删除指定知识库的所有分块记录
+            execute(
+                conn,
+                """
+                DELETE FROM finrag_llama_doc_hashes
+                WHERE chunk_id IN (
+                    SELECT chunk_id FROM finrag_chunks
+                    WHERE knowledge_base_id = %s
+                )
+                """,
+                (knowledge_base_id,),
+            )
+            # 删除指定知识库的所有参考文档记录
+            execute(
+                conn,
+                """
+                DELETE FROM finrag_ref_docs
+                WHERE ref_doc_id IN (
+                    SELECT DISTINCT document_id FROM finrag_chunks
+                    WHERE knowledge_base_id = %s
+                )
+                """,
+                (knowledge_base_id,),
+            )
+            # 删除指定知识库的所有分块记录
+            execute(conn, "DELETE FROM finrag_chunks WHERE knowledge_base_id = %s", (knowledge_base_id,))
+
     def _chunk_ids_for_document(self, document_id: str, knowledge_base_id: str) -> List[str]:
         """
         在 finrag_chunks 表中获取指定文档的所有分块 ID 列表

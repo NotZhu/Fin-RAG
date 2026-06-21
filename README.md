@@ -22,7 +22,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - **层级证据窗口**：`HierarchicalNodeParser.from_defaults(chunk_sizes=[1200, 600, 300])` 构建 root / parent / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
 - **路由化问答编排**：`llamaindex_router` 将问题路由到知识库问答或普通 LLM；知识库内部按 summary、HyDE、step-back、auto-merge、sub-question 等查询工具组合处理不同问题形态。
 - **可观测生成接口**：`/knowledge-bases/{knowledge_base_id}/ask` 以 SSE 输出 `analysis`、`pipeline_step`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时返回检索参数、Milvus hybrid 元信息、auto-merge 配置、来源节点、实时检索链路和阶段耗时。
-- **工程化运行底座**：PostgreSQL 承载 documents、docstore、BM25、manifest，Redis 缓存父级/根级节点，Milvus 存储 leaf node dense+sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
+- **工程化运行底座**：PostgreSQL 承载 documents、docstore、BM25、manifest，Milvus 存储 leaf node dense+sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
 
 ## Capabilities
 
@@ -61,12 +61,12 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 │ upload/reindex     │      │ manifest           │      │ leaf vectors       │
 └───────┬────────────┘      └───────┬────────────┘      └───────┬────────────┘
         │                           │                           │
-        │                   ┌───────▼────────────┐      ┌───────▼────────────┐
-        │                   │ Redis              │      │ Native Hybrid      │
-        │                   │ parent/root cache  │      │ Retriever          │
-        │                   └───────┬────────────┘      └───────┬────────────┘
-        │                           │                           │
-        └───────────────────────────┼───────────────────────────┘
+        │                                                  ┌───────▼────────────┐
+        │                                                  │ Native Hybrid      │
+        │                                                  │ Retriever          │
+        │                                                  └───────┬────────────┘
+        │                                                          │
+        └───────────────────────────┬──────────────────────────────┘
                                     │
                     ┌───────────────▼──────────────┐
                     │ LlamaIndex Router            │
@@ -84,7 +84,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 3. **Hierarchical Chunking**
    `DataPreparationModule` 使用 `HierarchicalNodeParser.from_defaults(chunk_sizes=[1200, 600, 300])` 构建层级节点；默认 `RAG_CHUNK_SIZE=300`、`RAG_CHUNK_OVERLAP=60`。完整节点写入 PostgreSQL docstore，`get_leaf_nodes()` 输出的 leaf nodes 进入 Milvus 检索索引。每个 leaf node 携带 `chunk_id`、`parent_chunk_id`、`root_chunk_id`、`chunk_level` 和 `chunk_idx`，用于回源、合并和引用。
 4. **Index Persistence**
-   `FinRAGSystem` 将文档记录、LlamaIndex nodes、BM25 term statistics 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type`、`page_number` 等 scalar fields 保存 leaf vectors；Redis 用于缓存父级/根级节点回源结果。
+   `FinRAGSystem` 将文档记录、LlamaIndex nodes、BM25 term statistics 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type`、`page_number` 等 scalar fields 保存 leaf vectors。
 5. **Hybrid Retrieval**
    检索策略为 `llamaindex_router`。`MilvusNativeHybridRetriever(BaseRetriever)` 发起 Milvus `VectorStoreQueryMode.HYBRID` 查询，使用 `RAG_RETRIEVAL_CANDIDATE_K` 控制 dense/sparse/hybrid 候选规模，使用 `RAG_TOP_K` 控制最终证据数量，并通过 `MetadataFilters` 限定 `knowledge_base_id`。
 6. **Context Assembly**
@@ -103,7 +103,6 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - BM25 sparse embedding、jieba
 - Qwen / DashScope LlamaIndex 原生集成
 - PostgreSQL 文档、节点、BM25 状态和索引 manifest 存储
-- Redis 父级/根级节点回源缓存
 - Ragas（`eval` extra）
 - React 18、Vite 5、TypeScript、Vitest
 
@@ -114,7 +113,7 @@ apps/web/                 React 金融资料库工作台
 src/finrag/application/   FinRAGSystem、启动、文档生命周期、问答 pipeline
 src/finrag/api/           FastAPI app、routes、middleware、error handlers
 src/finrag/core/          配置、LlamaIndex 类型 re-export、响应 schema
-src/finrag/storage/       PostgreSQL stores、Redis cache、DB helper、protocols
+src/finrag/storage/       PostgreSQL stores、DB helper、protocols
 src/finrag/ingestion/     文档记录、元数据工具、多格式解析和 load documents
 src/finrag/indexing/      层级节点、auto merge、Milvus index、BM25 sparse embedding
 src/finrag/retrieval/     llamaindex_router / native hybrid / rerank
@@ -123,7 +122,7 @@ data/documents/           金融示例资料库与上传后的原始文档
 datasets/eval/            检索与生成评估集
 scripts/                  检索评估、Ragas 评估与维护脚本
 tests/                    后端、检索、生成、API 与前端契约测试
-storage/uploads/          运行时临时上传文件；索引状态保存在 PostgreSQL/Milvus/Redis
+storage/uploads/          运行时临时上传文件；索引状态保存在 PostgreSQL/Milvus
 ```
 
 ## Sample Dataset
@@ -136,12 +135,9 @@ storage/uploads/          运行时临时上传文件；索引状态保存在 Po
 
 ### Backend
 
-```bash
-python -m pip install -e ".[dev]"
-copy .env.example .env
-docker compose up -d postgres redis etcd minio milvus
-finrag rebuild --knowledge-base-id finance
-uvicorn finrag.api:app --host 127.0.0.1 --port 8000
+```powershell
+uv sync --group dev
+Copy-Item .env.example .env
 ```
 
 `.env.example` 默认使用 DashScope embedding 模型，并关闭 rerank：
@@ -160,6 +156,14 @@ DASHSCOPE_API_KEY=your_api_key
 RAG_EMBEDDING_MODEL=text-embedding-v4
 RAG_DATA_PATH=data/documents
 RAG_KNOWLEDGE_BASE_ID=finance
+```
+
+启动本地依赖、初始化默认知识库并运行 API：
+
+```powershell
+docker compose up -d postgres redis etcd minio milvus
+uv run python -m finrag.cli rebuild --knowledge-base-id finance
+uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
 索引初始化需要 `DASHSCOPE_API_KEY`。需要二阶段精排时配置 Jina-compatible HTTP rerank：
@@ -197,6 +201,9 @@ npm run build
 | `GET`    | `/knowledge-bases/{knowledge_base_id}/rebuilds/{job_id}`                 | 查询指定知识库全量重建任务的 `queued/running/succeeded/failed` 状态                            |
 | `GET`    | `/knowledge-bases`                                                        | 返回知识库列表                                                                                  |
 | `POST`   | `/knowledge-bases`                                                        | 创建知识库，请求体为 `{"knowledge_base_id":"finance"}`                                        |
+| `POST`   | `/knowledge-bases/{knowledge_base_id}/archive`                            | 归档指定知识库，保留文档和索引，禁止问答、预热、重建和文档写入                                  |
+| `POST`   | `/knowledge-bases/{knowledge_base_id}/restore`                            | 恢复已归档知识库                                                                                |
+| `DELETE` | `/knowledge-bases/{knowledge_base_id}`                                    | 删除指定知识库，清理托管源文件、文档记录、BM25、docstore、manifest 和运行时缓存                 |
 | `GET`    | `/knowledge-bases/{knowledge_base_id}/documents`                          | 返回指定知识库的公开文档列表和索引状态                                                          |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/documents/upload`                   | multipart 上传 PDF / Markdown / TXT / DOCX，表单字段支持 `async_index`                        |
 | `DELETE` | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}`            | 删除指定知识库中的文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点                      |
@@ -297,6 +304,7 @@ data: {"response":{...},"final_decision":"generate"}
 
 | Endpoint             | Fields                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/knowledge-bases` | `knowledge_base_id`、`document_count`、`status`、`created_at`、`updated_at`、`archived_at`、`deleted_at`                                                                                                                     |
 | `/knowledge-bases/{knowledge_base_id}/ready` | `ready`、`status`、`total_documents`、`total_chunks`、`last_error`                                                                                                                                                          |
 | `/knowledge-bases/{knowledge_base_id}/rebuilds` | `job_id`、`knowledge_base_id`、`status`、`created_at`、`started_at`、`completed_at`、`error`、`result`                                                                                                                   |
 | `/knowledge-bases/{knowledge_base_id}/documents` | `document_id`、`filename`、`file_type`、`knowledge_base_id`、`status`、`chunk_count`、`upload_time`、`last_error`                                                                                                     |
@@ -353,7 +361,7 @@ npm run build
 | `RAG_UPLOAD_DIR`                 | `storage/uploads`                    | 上传文件临时保存目录                       |
 | `RAG_KNOWLEDGE_BASE_ID`          | `finance`                            | 默认资料库 ID                              |
 | `RAG_DATABASE_URL`               | `postgresql://.../finrag`            | PostgreSQL 连接串                          |
-| `RAG_REDIS_URL`                  | `redis://localhost:6379/0`           | Redis 缓存连接串                           |
+| `RAG_REDIS_URL`                  | `redis://localhost:6379/0`           | Redis 连接串（预留）                       |
 | `RAG_MILVUS_HOST`                | `localhost`                          | Milvus 服务地址                            |
 | `RAG_MILVUS_PORT`                | `19530`                              | Milvus 服务端口                            |
 | `RAG_MILVUS_COLLECTION`          | `finrag_leaf_nodes`                  | Milvus leaf node collection                |
@@ -382,10 +390,10 @@ npm run build
 
 本地依赖栈使用 PostgreSQL、Redis、etcd、MinIO 和 Milvus：
 
-```bash
+```powershell
 docker compose up -d postgres redis etcd minio milvus
-finrag rebuild --knowledge-base-id finance
-uvicorn finrag.api:app --host 127.0.0.1 --port 8000
+uv run python -m finrag.cli rebuild --knowledge-base-id finance
+uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
 健康检查：
@@ -395,8 +403,18 @@ curl http://localhost:8000/health
 curl http://localhost:8000/ready
 ```
 
+清空 Docker 数据并重启：
+
+```powershell
+docker compose down -v --remove-orphans
+docker compose up -d postgres redis etcd minio milvus
+uv run python -m finrag.cli rebuild --knowledge-base-id finance
+uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
+```
+
+`docker compose down -v` 会删除 compose 声明的 PostgreSQL、Redis、etcd、MinIO 和 Milvus 数据卷。需要同时清理本地上传缓存时，可额外删除 `storage/` 目录；示例数据集位于 `data/`，通常保留。
+
 常见恢复动作：
 
 - schema 或 manifest 不匹配：运行 `finrag rebuild --knowledge-base-id finance`，从指定知识库源文档重建 PostgreSQL `documents`、`nodes`、BM25 状态和 Milvus leaf vectors。
 - Milvus collection 损坏或被清空：运行 `finrag rebuild --knowledge-base-id finance`，对应 collection 会 drop/recreate 并重新写入 dense+sparse leaf vectors。
-- Redis 缓存异常：重启 Redis 后访问 `/ready` 或执行一次检索，节点缓存会从 PostgreSQL 回源恢复。

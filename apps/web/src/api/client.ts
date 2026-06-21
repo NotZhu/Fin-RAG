@@ -92,6 +92,33 @@ export async function createKnowledgeBase(
   });
 }
 
+export async function archiveKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<KnowledgeBaseRecord> {
+  return fetchJson<KnowledgeBaseRecord>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/archive`,
+    { method: "POST" },
+  );
+}
+
+export async function restoreKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<KnowledgeBaseRecord> {
+  return fetchJson<KnowledgeBaseRecord>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/restore`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteKnowledgeBase(
+  knowledgeBaseId: string,
+): Promise<KnowledgeBaseRecord> {
+  return fetchJson<KnowledgeBaseRecord>(
+    `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export async function listDocuments(
   knowledgeBaseId: string,
 ): Promise<DocumentsResponse> {

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from finrag.core import FinRAGResponse, RAGTrace, RetrievedSource
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 
 class FakeFinRAGSystem:
@@ -65,6 +66,9 @@ class FakeFinRAGSystem:
 
     def list_documents(self, knowledge_base_id: str):
         return []
+
+    def ensure_knowledge_base_active(self, knowledge_base_id: str):
+        return None
 
     def rebuild_from_sources(self, knowledge_base_id):
         self.rebuild_calls.append(knowledge_base_id)
@@ -262,6 +266,28 @@ def test_scoped_warmup_initializes_path_knowledge_base():
     assert response.json()["ready"] is True
     assert systems[0].ensure_calls == 1
     assert systems[0].ensure_knowledge_base_ids == ["risk"]
+
+
+def test_archived_knowledge_base_runtime_actions_return_conflict():
+    class ArchivedSystem(FakeFinRAGSystem):
+        def ensure_knowledge_base_active(self, knowledge_base_id: str):
+            if knowledge_base_id == "risk":
+                raise KnowledgeBaseArchivedError(knowledge_base_id)
+
+    client, systems = build_client(ArchivedSystem)
+
+    warmup = client.post("/knowledge-bases/risk/warmup")
+    rebuild = client.post("/knowledge-bases/risk/rebuilds")
+    ask = client.post("/knowledge-bases/risk/ask", json={"question": "hello"})
+
+    assert warmup.status_code == 409
+    assert warmup.json()["error"]["code"] == "knowledge_base_archived"
+    assert rebuild.status_code == 409
+    assert rebuild.json()["error"]["code"] == "knowledge_base_archived"
+    assert ask.status_code == 409
+    assert ask.json()["error"]["code"] == "knowledge_base_archived"
+    assert systems[0].ensure_calls == 0
+    assert systems[0].rebuild_calls == []
 
 
 def test_scoped_rebuild_job_rebuilds_path_knowledge_base():

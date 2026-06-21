@@ -78,6 +78,18 @@ class RAGService:
             self._last_error = None
             return system
 
+    def ensure_knowledge_base_active(self, knowledge_base_id: str) -> None:
+        """
+        校验知识库是否允许执行 warmup/rebuild/ask 等运行时操作
+        Args:
+            knowledge_base_id: 目标知识库 ID
+        """
+        system = self.get_system()
+        checker = getattr(system, "ensure_knowledge_base_active", None)
+        # 如果系统支持校验知识库状态，且校验函数可调用
+        if callable(checker):
+            checker(knowledge_base_id)
+
     def ready(self, knowledge_base_id: str | None = None) -> dict:
         """
         返回 RAG 服务就绪状态，未初始化或初始化失败时给出错误信息
@@ -117,7 +129,9 @@ class RAGService:
         Returns:
             初始化后的 ready 状态
         """
-        # 确保系统已初始化
+        # 确保知识库已激活
+        self.ensure_knowledge_base_active(knowledge_base_id)
+        # 确保知识库已初始化
         self.ensure_knowledge_base_ready(knowledge_base_id)
         return self.ready(knowledge_base_id)
 
@@ -129,6 +143,7 @@ class RAGService:
         Returns:
             可用于轮询的任务状态字典
         """
+        self.ensure_knowledge_base_active(knowledge_base_id)
         with self._rebuild_jobs_lock:
             for job in self._rebuild_jobs.values():
                 # 检查是否有正在运行或已排队的任务

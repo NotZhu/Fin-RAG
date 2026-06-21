@@ -218,7 +218,7 @@ def build_top_router(*, system: Any, llm: Any | None = None, knowledge_base_id: 
     else:
         return knowledge_engine
 
-    # 顶部路由查询引擎
+    # 构建路由选择器
     selector = LLMSingleSelector.from_defaults(
         llm=llm,
         prompt_template_str=(
@@ -229,6 +229,7 @@ def build_top_router(*, system: Any, llm: Any | None = None, knowledge_base_id: 
             "请选择最合适的一个工具，并按要求输出 JSON。"
         )
     )
+    # 返回顶部路由查询引擎
     return RouterQueryEngine(selector=selector, query_engine_tools=tools, llm=llm)
 
 

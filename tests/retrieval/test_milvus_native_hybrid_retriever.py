@@ -38,7 +38,7 @@ class RecordingVectorIndex:
 
 
 def test_milvus_native_hybrid_retriever_uses_milvus_hybrid_query_mode():
-    node = TextNode(id_="leaf-a", text="客户风险等级", metadata={"knowledge_base_id": "kb-finance"})
+    node = TextNode(id_="leaf-a", text="客户风险等级", metadata={"knowledge_base_id": "finance"})
     vector_index = RecordingVectorIndex(results=[NodeWithScore(node=node, score=0.8)])
 
     retriever = MilvusNativeHybridRetriever(
@@ -46,7 +46,7 @@ def test_milvus_native_hybrid_retriever_uses_milvus_hybrid_query_mode():
         candidate_k=12,
         top_k=3,
         rrf_k=71,
-        filters={"knowledge_base_id": "kb-finance"},
+        filters={"knowledge_base_id": "finance"},
     )
     results = retriever.retrieve("风险等级")
 

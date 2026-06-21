@@ -11,6 +11,7 @@ from finrag.api.errors import _build_error_response
 from finrag.api.schemas import AskRequest
 from finrag.api.rag_service import RAGService
 from finrag.core.config import validate_knowledge_base_id
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 
 def register_qa_routes(app: FastAPI, service: RAGService) -> None:
@@ -38,13 +39,26 @@ def register_qa_routes(app: FastAPI, service: RAGService) -> None:
         """
         request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         try:
+            # 验证并解析知识库 ID
             resolved_knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
         except ValueError as exc:
+            # 处理无效的知识库 ID
             return _build_error_response(
                 code="invalid_knowledge_base_id",
                 message=str(exc),
                 request_id=request_id,
                 status_code=422,
+            )
+        try:
+            # 确保知识库已激活
+            service.ensure_knowledge_base_active(resolved_knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 处理知识库已归档
+            return _build_error_response(
+                code="knowledge_base_archived",
+                message=f"知识库 {resolved_knowledge_base_id!r} 已归档",
+                request_id=request_id,
+                status_code=409,
             )
 
         # 问答流

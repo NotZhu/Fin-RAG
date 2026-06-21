@@ -11,6 +11,7 @@ from finrag.api.errors import _build_document_not_found_response, _build_error_r
 from finrag.api.rag_service import RAGService
 from finrag.core.config import RAGConfig, validate_knowledge_base_id
 from finrag.ingestion.parsers import SUPPORTED_SUFFIXES
+from finrag.storage.knowledge_base_registry import KnowledgeBaseArchivedError
 
 _DEFAULT_CONFIG = RAGConfig() # 路由层默认配置快照
 DEFAULT_UPLOAD_DIR = Path(_DEFAULT_CONFIG.upload_dir) # 默认上传临时目录
@@ -50,6 +51,22 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
             通过校验的知识库 ID
         """
         return validate_knowledge_base_id(value)
+
+    def _archived_response(knowledge_base_id: str, request_id: str):
+        """
+        构建知识库已归档的错误响应
+        Args:
+            knowledge_base_id: 知识库 ID
+            request_id: 当前 HTTP 请求 ID
+        Returns:
+            包含错误信息的统一响应响应字典
+        """
+        return _build_error_response(
+            code="knowledge_base_archived",
+            message=f"知识库 {knowledge_base_id!r} 已归档",
+            request_id=request_id,
+            status_code=409,
+        )
 
     @app.get("/knowledge-bases/{knowledge_base_id}/documents")
     def list_knowledge_base_documents(knowledge_base_id: str, request: Request):
@@ -178,6 +195,9 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
                 return prepared
             # 同步索引文档
             return system.ingest_uploaded_file(temp_path, safe_filename, knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 知识库已归档
+            return _archived_response(knowledge_base_id, request_id)
         finally:
             # 删除临时文件
             temp_path.unlink(missing_ok=True)
@@ -206,6 +226,9 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
             )
         try:
             return system.delete_document(document_id, resolved_knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 知识库已归档
+            return _archived_response(resolved_knowledge_base_id, request_id)
         except KeyError:
             # 文档不存在
             return _build_document_not_found_response(document_id, request_id)
@@ -234,5 +257,8 @@ def register_document_routes(app: FastAPI, service: RAGService, upload_dir: str 
             )
         try:
             return system.reindex_document(document_id, resolved_knowledge_base_id)
+        except KnowledgeBaseArchivedError:
+            # 知识库已归档
+            return _archived_response(resolved_knowledge_base_id, request_id)
         except KeyError:
             return _build_document_not_found_response(document_id, request_id)
