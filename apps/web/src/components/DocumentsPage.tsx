@@ -16,7 +16,7 @@ import {
 import type { DocumentRecord } from "../api/client";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { CreateKnowledgeBaseDialog } from "./CreateKnowledgeBaseDialog";
-import { displayName, formatUploadTime } from "./utils";
+import { formatUploadTime } from "./utils";
 
 type DocumentsPageProps = {
   documents: DocumentRecord[];
@@ -109,7 +109,7 @@ export function DocumentsPage({
   const start = (safePage - 1) * PAGE_SIZE;
   const pageDocs = documents.slice(start, start + PAGE_SIZE);
   const knowledgeBaseName = knowledgeBaseIsAvailable
-    ? displayName(knowledgeBaseId)
+    ? knowledgeBaseId
     : knowledgeBaseLoadState === "loading"
       ? "加载中"
       : knowledgeBaseLoadState === "error"
@@ -145,7 +145,7 @@ export function DocumentsPage({
           <span className="kb-stat-divider">|</span>
           <div className="kb-stat-item">
             <Clock3 size={16} />
-            <span className="kb-stat-label">更新</span>
+            <span className="kb-stat-label">更新时间</span>
             {updatedAtText ? (
               <span className="kb-stat-value">{updatedAtText}</span>
             ) : null}

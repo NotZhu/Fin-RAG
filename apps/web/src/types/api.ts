@@ -106,7 +106,6 @@ export type ApiError = {
 };
 
 export type AskStreamEvent =
-  | { type: "pipeline_step"; data: PipelineStep }
   | { type: "token"; data: { text?: string } & Record<string, unknown> }
   | { type: "source"; data: { source?: RetrievedSource } & Record<string, unknown> }
   | { type: "done"; data: { response?: AskResponse; final_decision?: string } & Record<string, unknown> }

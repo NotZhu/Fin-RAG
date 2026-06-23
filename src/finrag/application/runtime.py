@@ -19,5 +19,4 @@ class KnowledgeBaseRuntime:
     knowledge_query_engine: Optional[Any] = None # 知识库查询引擎
     auto_merge_retriever: Optional[Any] = None # 自动合并检索器
     hybrid_retriever: Optional[Any] = None # 混合检索器
-    summary_index: Optional[Any] = None # 摘要索引
     router_engine: Optional[Any] = None # 路由引擎

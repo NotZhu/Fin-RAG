@@ -33,16 +33,6 @@ import {
 import { errorMessage } from "../components/utils";
 import "../styles/app.css";
 
-function isPipelineStep(value: unknown): value is PipelineStep {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof (value as PipelineStep).id === "string" &&
-      typeof (value as PipelineStep).label === "string" &&
-      typeof (value as PipelineStep).order === "number",
-  );
-}
-
 function isRetrievedSource(
   value: unknown,
 ): value is AskResponse["sources"][number] {
@@ -63,16 +53,11 @@ function isAskResponse(value: unknown): value is AskResponse {
   );
 }
 
-function upsertStep(steps: PipelineStep[], step: PipelineStep) {
-  const next = steps.some((item) => item.id === step.id)
-    ? steps.map((item) => (item.id === step.id ? step : item))
-    : [...steps, step];
-  return next.sort((a, b) => a.order - b.order);
-}
-
 const REBUILD_POLL_INTERVAL_MS = 1200;
 const REBUILD_POLL_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_KNOWLEDGE_BASE_ID = "finance";
+const ANSWER_CHUNK_PLAYBACK_MS = 16;
+const ANSWER_CHUNK_SIZE = 2;
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -97,6 +82,7 @@ function chooseKnowledgeBase(
 async function waitForRebuildCompletion(
   knowledgeBaseId: string,
   initialJob: RebuildJobResponse,
+  onPoll?: () => Promise<void>,
 ) {
   let job = initialJob;
   const startedAt = Date.now();
@@ -106,6 +92,7 @@ async function waitForRebuildCompletion(
     }
     await delay(REBUILD_POLL_INTERVAL_MS);
     job = await getKnowledgeBaseRebuildJob(knowledgeBaseId, job.job_id);
+    await onPoll?.();
   }
   if (job.status === "failed") {
     throw { message: job.error ?? "全量重建失败。" };
@@ -143,20 +130,85 @@ function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const knowledgeBaseIdRef = useRef(knowledgeBaseId);
   const warmedKnowledgeBasesRef = useRef<Set<string>>(new Set());
+  const answerTimersRef = useRef<number[]>([]);
+  const answerNextPlaybackAtRef = useRef(0);
+  const pendingAnswerTimersRef = useRef(0);
+  const requestFinishedRef = useRef(false);
+  const sawAnswerTokenRef = useRef(false);
+  const handledDoneRef = useRef(false);
   const currentKnowledgeBase = knowledgeBases.find(
     (item) => item.knowledge_base_id === knowledgeBaseId,
   );
   const currentKnowledgeBaseIsActive = isActiveKnowledgeBase(currentKnowledgeBase);
 
   function handleClearConversation() {
+    clearPlaybackTimers();
     setSubmittedQuestion("");
     setResponse(null);
     setStreamedAnswer("");
     setPipelineSteps([]);
+    setTimingsMs({});
     setError("");
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setAnswerBusy(false);
+  }
+
+  function clearPlaybackTimers() {
+    answerTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    answerTimersRef.current = [];
+    answerNextPlaybackAtRef.current = 0;
+    pendingAnswerTimersRef.current = 0;
+    requestFinishedRef.current = false;
+    sawAnswerTokenRef.current = false;
+    handledDoneRef.current = false;
+  }
+
+  function finishAnswerIfSettled() {
+    if (requestFinishedRef.current && pendingAnswerTimersRef.current === 0) {
+      setAnswerBusy(false);
+    }
+  }
+
+  function scheduleAnswerText(text: string) {
+    const characters = Array.from(text || "");
+    for (let index = 0; index < characters.length; index += ANSWER_CHUNK_SIZE) {
+      const chunk = characters.slice(index, index + ANSWER_CHUNK_SIZE).join("");
+      const now = window.performance.now();
+      const scheduledAt = Math.max(now, answerNextPlaybackAtRef.current);
+      const delayMs = scheduledAt - now;
+      answerNextPlaybackAtRef.current = scheduledAt + ANSWER_CHUNK_PLAYBACK_MS;
+      pendingAnswerTimersRef.current += 1;
+      const timerId = window.setTimeout(() => {
+        setStreamedAnswer((current) => current + chunk);
+        pendingAnswerTimersRef.current = Math.max(
+          pendingAnswerTimersRef.current - 1,
+          0,
+        );
+        finishAnswerIfSettled();
+      }, delayMs);
+      answerTimersRef.current.push(timerId);
+    }
+  }
+
+  function displayResponseShell(payload: AskResponse): AskResponse {
+    return { ...payload, answer: "" };
+  }
+
+  function handleDoneResponse(doneResponse: AskResponse) {
+    handledDoneRef.current = true;
+    setResponse(displayResponseShell(doneResponse));
+    setPipelineSteps(
+      [...(doneResponse.trace?.pipeline_steps ?? [])].sort(
+        (a, b) => a.order - b.order,
+      ),
+    );
+    if (!sawAnswerTokenRef.current && doneResponse.answer) {
+      scheduleAnswerText(doneResponse.answer);
+    }
+    if (doneResponse.trace?.timings_ms) {
+      setTimingsMs(doneResponse.trace.timings_ms);
+    }
   }
 
   async function reindexDocument(documentId: string) {
@@ -260,9 +312,23 @@ function App() {
     const targetKnowledgeBaseId = knowledgeBaseId;
     setRebuildBusy(true);
     setError("");
+    setDocuments((current) =>
+      current.map((doc) => ({
+        ...doc,
+        status: "parsing" as const,
+        last_error: null,
+      })),
+    );
     try {
       const job = await rebuildKnowledgeBaseApi(targetKnowledgeBaseId);
-      await waitForRebuildCompletion(targetKnowledgeBaseId, job);
+      await waitForRebuildCompletion(targetKnowledgeBaseId, job, async () => {
+        if (knowledgeBaseIdRef.current === targetKnowledgeBaseId) {
+          await Promise.all([
+            refreshDocuments(targetKnowledgeBaseId),
+            refreshKnowledgeBases({ showLoading: false }),
+          ]);
+        }
+      });
       warmedKnowledgeBasesRef.current.add(targetKnowledgeBaseId);
       await refreshKnowledgeBases();
       if (knowledgeBaseIdRef.current === targetKnowledgeBaseId) {
@@ -271,13 +337,19 @@ function App() {
     } catch (caught) {
       warmedKnowledgeBasesRef.current.delete(targetKnowledgeBaseId);
       setError(errorMessage(caught, "全量重建失败。"));
+      if (knowledgeBaseIdRef.current === targetKnowledgeBaseId) {
+        await refreshDocuments(targetKnowledgeBaseId);
+      }
     } finally {
       setRebuildBusy(false);
     }
   }
 
-  async function refreshKnowledgeBases() {
-    setKnowledgeBaseLoadState("loading");
+  async function refreshKnowledgeBases(options: { showLoading?: boolean } = {}) {
+    const showLoading = options.showLoading ?? true;
+    if (showLoading) {
+      setKnowledgeBaseLoadState("loading");
+    }
     setKnowledgeBaseLoadError("");
     try {
       const payload = await listKnowledgeBases();
@@ -394,11 +466,13 @@ function App() {
       return;
     }
 
+    clearPlaybackTimers();
     setAnswerBusy(true);
     setError("");
     setResponse(null);
     setStreamedAnswer("");
     setPipelineSteps([]);
+    setTimingsMs({});
     setSubmittedQuestion(trimmedQuestion);
     setQuestion("");
     const abortController = new AbortController();
@@ -412,16 +486,9 @@ function App() {
           signal: abortController.signal,
           onEvent(streamEvent: AskStreamEvent) {
             const eventData = streamEvent.data;
-            if (
-              streamEvent.type === "pipeline_step" &&
-              isPipelineStep(eventData)
-            ) {
-              setPipelineSteps((current) => upsertStep(current, eventData));
-            }
             if (streamEvent.type === "token") {
-              setStreamedAnswer(
-                (current) => current + String(streamEvent.data.text ?? ""),
-              );
+              sawAnswerTokenRef.current = true;
+              scheduleAnswerText(String(streamEvent.data.text ?? ""));
             }
             const source = "source" in eventData ? eventData.source : undefined;
             if (streamEvent.type === "source" && isRetrievedSource(source)) {
@@ -443,24 +510,13 @@ function App() {
               isAskResponse(streamEvent.data.response)
             ) {
               const doneResponse = streamEvent.data.response;
-              setResponse(doneResponse);
-              if (doneResponse.trace?.pipeline_steps?.length) {
-                setPipelineSteps(doneResponse.trace.pipeline_steps);
-              }
-              if (doneResponse.trace?.timings_ms) {
-                setTimingsMs(doneResponse.trace.timings_ms);
-              }
+              handleDoneResponse(doneResponse);
             }
           },
         },
       );
-      setResponse(result.payload);
-      setStreamedAnswer(result.payload.answer);
-      if (result.payload.trace?.pipeline_steps?.length) {
-        setPipelineSteps(result.payload.trace.pipeline_steps);
-      }
-      if (result.payload.trace?.timings_ms) {
-        setTimingsMs(result.payload.trace.timings_ms);
+      if (!handledDoneRef.current) {
+        handleDoneResponse(result.payload);
       }
     } catch (caught) {
       if ((caught as Error)?.name === "AbortError") {
@@ -471,7 +527,8 @@ function App() {
         );
       }
     } finally {
-      setAnswerBusy(false);
+      requestFinishedRef.current = true;
+      finishAnswerIfSettled();
       abortControllerRef.current = null;
     }
   }
@@ -479,6 +536,7 @@ function App() {
   function handleAbortAnswer() {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    clearPlaybackTimers();
     setAnswerBusy(false);
   }
 
@@ -557,13 +615,17 @@ function App() {
     void initializeApp();
   }, []);
 
+  useEffect(() => () => clearPlaybackTimers(), []);
+
   useEffect(() => {
     knowledgeBaseIdRef.current = knowledgeBaseId;
   }, [knowledgeBaseId]);
 
   useEffect(() => {
-    const hasParsing = documents.some((doc) => doc.status === "parsing");
-    if (!hasParsing) return;
+    const hasPendingDocument = documents.some(
+      (doc) => doc.status === "uploaded" || doc.status === "parsing",
+    );
+    if (!hasPendingDocument) return;
     const interval = setInterval(() => {
       void refreshDocuments();
     }, 3000);

@@ -133,25 +133,29 @@ export function UploadPanel({
             </div>
             <div className="upload-file-summary">
               <div className="upload-summary-row">
-                <span>文件</span>
-                <strong
-                  aria-label={selectedFile.name}
-                  className="upload-filename"
-                  title={selectedFile.name}
-                >
-                  <span className="upload-filename-stem">
-                    {selectedFilename?.stem}
-                  </span>
-                  {selectedFilename?.extension ? (
-                    <span className="upload-filename-extension">
-                      {selectedFilename.extension}
+                <div className="upload-summary-item upload-summary-file">
+                  <span>文件：</span>
+                  <strong
+                    aria-label={selectedFile.name}
+                    className="upload-filename"
+                    title={selectedFile.name}
+                  >
+                    <span className="upload-filename-stem">
+                      {selectedFilename?.stem}
                     </span>
-                  ) : null}
-                </strong>
-                <span>大小</span>
-                <strong className="upload-summary-size">
-                  {formatFileSize(selectedFile.size)}
-                </strong>
+                    {selectedFilename?.extension ? (
+                      <span className="upload-filename-extension">
+                        {selectedFilename.extension}
+                      </span>
+                    ) : null}
+                  </strong>
+                </div>
+                <div className="upload-summary-item upload-summary-size-item">
+                  <span>大小：</span>
+                  <strong className="upload-summary-size">
+                    {formatFileSize(selectedFile.size)}
+                  </strong>
+                </div>
               </div>
             </div>
             <div className="confirm-actions">

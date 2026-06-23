@@ -45,7 +45,7 @@ class RAGTrace:
     route_type: str = "" # 问题路由类型
     filters: Dict[str, Any] = field(default_factory=dict) # 检索过滤条件
     timings_ms: Dict[str, float] = field(default_factory=dict) # 各阶段耗时毫秒数
-    pipeline_steps: List[Dict[str, Any]] = field(default_factory=list) # 前端实时检索链路步骤
+    pipeline_steps: List[Dict[str, Any]] = field(default_factory=list) # 前端最终检索链路步骤
     retrieval_params: Dict[str, Any] = field(default_factory=dict) # 检索参数快照
     retrieved_nodes: List[Dict[str, Any]] = field(default_factory=list) # 初始召回节点摘要
     evidence_nodes: List[Dict[str, Any]] = field(default_factory=list) # 生成阶段证据节点摘要

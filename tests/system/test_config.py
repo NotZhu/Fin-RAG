@@ -21,8 +21,13 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "storage" / "llamaindex"
     assert config.auto_merge_ratio_threshold == 0.5
     assert config.context_token_budget == 2400
+    assert config.neighbor_window == 1
+    assert config.use_semantic_chunking is False
     assert Path(config.upload_dir) == PROJECT_ROOT / "storage" / "uploads"
     assert config.max_upload_bytes == 20 * 1024 * 1024
+    assert not hasattr(config, "ocr_enabled")
+    assert not hasattr(config, "ocr_lang")
+    assert not hasattr(config, "tesseract_cmd")
     assert PACKAGE_DIR == PROJECT_ROOT / "src" / "finrag"
     assert not hasattr(config, "hybrid_enabled")
     assert not hasattr(config, "ask_streaming")
@@ -61,6 +66,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     monkeypatch.setenv("RAG_LLAMAINDEX_INDEX_STORE_DIR", "custom_llama")
     monkeypatch.setenv("RAG_AUTO_MERGE_RATIO_THRESHOLD", "0.75")
     monkeypatch.setenv("RAG_CONTEXT_TOKEN_BUDGET", "1800")
+    monkeypatch.setenv("RAG_NEIGHBOR_WINDOW", "2")
+    monkeypatch.setenv("RAG_USE_SEMANTIC_CHUNKING", "true")
     monkeypatch.setenv("RAG_UPLOAD_DIR", "tmp_uploads")
     monkeypatch.setenv("RAG_MAX_UPLOAD_BYTES", "4096")
 
@@ -82,8 +89,13 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "custom_llama"
     assert config.auto_merge_ratio_threshold == 0.75
     assert config.context_token_budget == 1800
+    assert config.neighbor_window == 2
+    assert config.use_semantic_chunking is True
     assert Path(config.upload_dir) == PROJECT_ROOT / "tmp_uploads"
     assert config.max_upload_bytes == 4096
+    assert not hasattr(config, "ocr_enabled")
+    assert not hasattr(config, "ocr_lang")
+    assert not hasattr(config, "tesseract_cmd")
     assert not hasattr(config, "context_window_size")
     assert not hasattr(config, "retry_candidate_k")
     assert not hasattr(config, "step_back_enabled")
@@ -131,6 +143,8 @@ def test_service_stack_config_is_postgres_redis_milvus_only(monkeypatch):
     assert "vector_backend" not in config.to_dict()
     assert "hybrid_enabled" not in config.to_dict()
     assert "ask_streaming" not in config.to_dict()
+    assert "use_semantic_chunking" in config.to_dict()
+    assert "neighbor_window" in config.to_dict()
 
 
 def test_env_example_documents_postgres_redis_milvus_stack():
@@ -161,10 +175,15 @@ def test_env_example_documents_postgres_redis_milvus_stack():
         "RAG_LLAMAINDEX_INDEX_STORE_DIR",
         "RAG_AUTO_MERGE_RATIO_THRESHOLD",
         "RAG_CONTEXT_TOKEN_BUDGET",
+        "RAG_NEIGHBOR_WINDOW",
+        "RAG_USE_SEMANTIC_CHUNKING",
         "RAG_UPLOAD_DIR",
         "RAG_MAX_UPLOAD_BYTES",
     ]:
         assert f"{key}=" in env_example
+    assert "RAG_OCR_ENABLED=" not in env_example
+    assert "RAG_OCR_LANG=" not in env_example
+    assert "RAG_TESSERACT_CMD=" not in env_example
     assert "RAG_HYBRID_ENABLED=" not in env_example
     assert "RAG_ASK_STREAMING=" not in env_example
     assert "RAG_QUERY_REWRITE_ENABLED=" not in env_example

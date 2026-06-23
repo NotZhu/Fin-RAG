@@ -1,6 +1,12 @@
+import pytest
 from llama_index.core import Document
 
-from finrag.ingestion.parsers import ParserRegistry, compute_content_hash, load_documents
+from finrag.ingestion.parsers import (
+    SUPPORTED_SUFFIXES,
+    ParserRegistry,
+    compute_content_hash,
+    load_documents,
+)
 from tests.support.fakes import MemoryDocumentRegistry
 
 
@@ -42,6 +48,176 @@ def test_parser_registry_does_not_infer_markdown_heading_metadata(tmp_path):
     metadata = documents[0].metadata
     assert metadata["knowledge_base_id"] == "kb-finance"
     assert "title_hint" not in metadata
+
+
+def test_supported_suffixes_include_enterprise_office_web_data_formats_without_ocr_images():
+    assert {
+        ".md",
+        ".txt",
+        ".pdf",
+        ".docx",
+        ".csv",
+        ".json",
+        ".html",
+        ".htm",
+        ".xlsx",
+        ".pptx",
+    }.issubset(SUPPORTED_SUFFIXES)
+    assert not {".png", ".jpg", ".jpeg", ".tif", ".tiff"} & SUPPORTED_SUFFIXES
+
+
+def test_docx_parser_preserves_tables_as_markdown(tmp_path):
+    docx_lib = pytest.importorskip("docx")
+    source = tmp_path / "credit_policy.docx"
+    document = docx_lib.Document()
+    document.add_heading("授信政策", level=1)
+    document.add_paragraph("以下为行业准入参数。")
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "行业"
+    table.cell(0, 1).text = "准入等级"
+    table.cell(0, 2).text = "抵质押率上限"
+    table.cell(1, 0).text = "制造业"
+    table.cell(1, 1).text = "A"
+    table.cell(1, 2).text = "70%"
+    document.save(source)
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="kb-risk")
+
+    assert len(parsed) == 1
+    assert "授信政策" in parsed[0].text
+    assert "| 行业 | 准入等级 | 抵质押率上限 |" in parsed[0].text
+    assert "| 制造业 | A | 70% |" in parsed[0].text
+
+
+def test_docx_parser_preserves_paragraph_and_table_order(tmp_path):
+    docx_lib = pytest.importorskip("docx")
+    source = tmp_path / "ordered_policy.docx"
+    document = docx_lib.Document()
+    document.add_paragraph("一、授信政策说明")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "客户类型"
+    table.cell(0, 1).text = "额度上限"
+    table.cell(1, 0).text = "小微企业"
+    table.cell(1, 1).text = "500 万元"
+    document.add_paragraph("二、表后审批要求")
+    document.save(source)
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="kb-risk")
+
+    assert len(parsed) == 1
+    text = parsed[0].text
+    before_index = text.index("一、授信政策说明")
+    table_index = text.index("| 客户类型 | 额度上限 |")
+    after_index = text.index("二、表后审批要求")
+    assert before_index < table_index < after_index
+
+
+def test_csv_parser_outputs_markdown_table(tmp_path):
+    source = tmp_path / "metrics.csv"
+    source.write_text("指标,2025,2026预算\n营业收入,12000,15000\n毛利率,31%,33%\n", encoding="utf-8-sig")
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="finance")
+
+    assert len(parsed) == 1
+    assert parsed[0].metadata["file_type"] == "csv"
+    assert "| 指标 | 2025 | 2026预算 |" in parsed[0].text
+    assert "| 毛利率 | 31% | 33% |" in parsed[0].text
+
+
+def test_json_parser_outputs_readable_markdown(tmp_path):
+    source = tmp_path / "risk_case.json"
+    source.write_text(
+        '{"case_id":"RC-2026-001","customer":{"name":"华东设备","rating":"A-"},"limits":[{"product":"流贷","amount":3000}]}',
+        encoding="utf-8",
+    )
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="risk")
+
+    assert len(parsed) == 1
+    assert "# risk_case.json" in parsed[0].text
+    assert "- case_id: RC-2026-001" in parsed[0].text
+    assert "customer.name: 华东设备" in parsed[0].text
+    assert "limits[0].amount: 3000" in parsed[0].text
+
+
+def test_html_parser_preserves_headings_lists_and_tables(tmp_path):
+    source = tmp_path / "review.html"
+    source.write_text(
+        """
+        <html><body>
+          <h1>合同审查清单</h1>
+          <p>适用于 SaaS 订阅合同。</p>
+          <ul><li>确认数据出境条款</li><li>确认违约责任上限</li></ul>
+          <table><tr><th>条款</th><th>风险</th></tr><tr><td>自动续费</td><td>中</td></tr></table>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="legal")
+
+    assert len(parsed) == 1
+    assert "# 合同审查清单" in parsed[0].text
+    assert "- 确认数据出境条款" in parsed[0].text
+    assert "| 条款 | 风险 |" in parsed[0].text
+    assert "| 自动续费 | 中 |" in parsed[0].text
+
+
+def test_xlsx_parser_outputs_each_sheet_as_markdown_table(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    source = tmp_path / "budget.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "经营预算"
+    sheet.append(["科目", "2025实际", "2026预算"])
+    sheet.append(["营业收入", 12000, 15000])
+    sheet.append(["研发费用率", "8%", "9%"])
+    second = workbook.create_sheet("现金流")
+    second.append(["项目", "金额"])
+    second.append(["经营性现金流", 2600])
+    workbook.save(source)
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="finance")
+
+    assert len(parsed) == 1
+    assert "## 经营预算" in parsed[0].text
+    assert "| 科目 | 2025实际 | 2026预算 |" in parsed[0].text
+    assert "| 营业收入 | 12000 | 15000 |" in parsed[0].text
+    assert "## 现金流" in parsed[0].text
+    assert "| 经营性现金流 | 2600 |" in parsed[0].text
+
+
+def test_pptx_parser_preserves_slide_text_and_tables(tmp_path):
+    pptx = pytest.importorskip("pptx")
+    source = tmp_path / "committee.pptx"
+    presentation = pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "风险委员会汇报"
+    textbox = slide.shapes.add_textbox(100000, 900000, 5000000, 800000)
+    textbox.text = "本月新增预警客户 12 户。"
+    table_shape = slide.shapes.add_table(2, 2, 100000, 1800000, 4000000, 1000000)
+    table = table_shape.table
+    table.cell(0, 0).text = "风险项"
+    table.cell(0, 1).text = "等级"
+    table.cell(1, 0).text = "逾期迁徙"
+    table.cell(1, 1).text = "高"
+    presentation.save(source)
+
+    parsed = ParserRegistry.default().load(source, knowledge_base_id="risk")
+
+    assert len(parsed) == 1
+    assert "## Slide 1" in parsed[0].text
+    assert "风险委员会汇报" in parsed[0].text
+    assert "本月新增预警客户 12 户" in parsed[0].text
+    assert "| 风险项 | 等级 |" in parsed[0].text
+    assert "| 逾期迁徙 | 高 |" in parsed[0].text
+
+
+def test_image_formats_are_not_registered_without_ocr(tmp_path):
+    source = tmp_path / "scanned.png"
+    source.write_bytes(b"mocked")
+
+    assert ParserRegistry.default().load(source, knowledge_base_id="risk") == []
 
 
 def test_document_registry_tracks_lifecycle_and_deduplicates_by_hash(tmp_path):

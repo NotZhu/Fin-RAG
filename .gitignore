@@ -9,6 +9,8 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .pytest-tmp*/
+.pytest-red*/
+.pytest-review*/
 pytest-cache-files-*/
 /storage/
 apps/web/dist/

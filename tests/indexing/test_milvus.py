@@ -207,7 +207,6 @@ def test_manifest_uses_minimal_registry_managed_shape(tmp_path):
     assert manifest["milvus"]["rrf_k"] == 60
     assert "document_count" in manifest
     assert "node_count" in manifest
-    assert "summary_document_count" in manifest
     assert "created_at" not in manifest
     assert "source_fingerprint" not in manifest
 
@@ -315,6 +314,26 @@ def test_milvus_vector_store_receives_llamaindex_dense_schema(monkeypatch, tmp_p
     assert captured["search_config"] == {"ef": 64}
     assert "chunk_id" in captured["scalar_field_names"]
     assert "root_chunk_id" in captured["scalar_field_names"]
+
+
+def test_milvus_vector_store_returns_llamaindex_node_payload_fields(monkeypatch):
+    captured = {}
+
+    class CapturingFactoryStore:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(milvus_module, "_load_milvus_vector_store_class", lambda: CapturingFactoryStore)
+    module = IndexConstructionModule(
+        model_name="custom-1024",
+        embed_model=EmbeddingDimensionProbe(1024),
+    )
+
+    module.init_collection()
+
+    assert "_node_content" in captured["output_fields"]
+    assert "_node_type" in captured["output_fields"]
+    assert TEXT_FIELD in captured["output_fields"]
 
 
 def test_milvus_vector_store_can_initialize_in_worker_thread_without_existing_event_loop(monkeypatch, tmp_path):

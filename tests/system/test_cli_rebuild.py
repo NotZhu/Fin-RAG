@@ -121,6 +121,7 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
             knowledge_base_id="finance",
             status="indexed",
             chunk_count=1,
+            last_error="旧错误",
         )
     }
 
@@ -132,9 +133,11 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
             self.all_nodes = []
             self.storage_context = None
             self.registry_seen = "not-called"
+            self.existing_record_seen = None
 
         def load_documents(self):
             self.registry_seen = self.document_registry
+            self.existing_record_seen = system.document_registry.records["old-doc"].to_dict()
             if self.document_registry is None:
                 self.documents = [
                     Document(
@@ -161,6 +164,9 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
             return object()
 
         def clear_index(self, *, storage_context=None):
+            return object()
+
+        def build_vector_index(self, nodes, *, storage_context=None, reset=True):
             return object()
 
         def load_index(self, expected_manifest=None, *, storage_context=None):
@@ -203,15 +209,124 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
     data_module = RecordingDataModule()
     system.data_module = data_module
     system.index_module = FakeIndexModule()
+    system.llama_docstore = SimpleNamespace(delete_knowledge_base=lambda knowledge_base_id: None, add_documents=lambda nodes: None)
     system.generation_module = SimpleNamespace()
     system._refresh_retrieval = lambda vector_index, leaf_nodes, knowledge_base_id: None
 
     result = system.rebuild_from_sources("finance")
 
     assert data_module.registry_seen is None
+    assert data_module.existing_record_seen["status"] == "parsing"
+    assert data_module.existing_record_seen["chunk_count"] == 0
+    assert data_module.existing_record_seen["last_error"] is None
     assert result["document_count"] == 1
     assert system.document_registry.list_public()[0]["filename"] == "source.md"
     assert "old-doc" not in system.document_registry.records
+
+
+def test_rebuild_marks_source_documents_parsing_and_touches_knowledge_base(monkeypatch, tmp_path):
+    import finrag.indexing.nodes as nodes_module
+    import tests.support.fakes as fakes
+
+    counter = {"value": 0}
+
+    def next_time():
+        counter["value"] += 1
+        return f"2026-06-22T16:{counter['value']:02d}:00+00:00"
+
+    monkeypatch.setattr(fakes, "_utc_now_iso", next_time)
+
+    source = tmp_path / "finance" / "source.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# 新源文件\n客户风险等级应与产品风险等级匹配", encoding="utf-8")
+    system = FinRAGSystem(RAGConfig(data_path=str(tmp_path)))
+    initial_updated_at = system.knowledge_base_registry.get("finance").updated_at
+    observed = {}
+
+    class FakeIndexModule:
+        def __init__(self):
+            self.manifest = {"schema_version": 9}
+            self.embed_model = object()
+
+        def init_collection(self, *, reset=False):
+            return object()
+
+        def build_vector_index(self, nodes, *, storage_context=None, reset=True):
+            return object()
+
+        def load_index(self, expected_manifest=None, *, storage_context=None):
+            return object()
+
+        def save_manifest(self, manifest):
+            self.manifest = dict(manifest)
+
+        def load_manifest(self, knowledge_base_id):
+            return self.manifest
+
+        def build_manifest(self, *, chunk_size=300, chunk_overlap=60, **kwargs):
+            return {"schema_version": 9, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap}
+
+    class RecordingDataModule:
+        def __init__(self):
+            self.document_registry = system.document_registry
+            self.documents = []
+            self.chunks = []
+            self.all_nodes = []
+            self.storage_context = None
+            self.data_path = str(tmp_path)
+
+        def load_documents(self):
+            if self.document_registry is None:
+                self.documents = [
+                    Document(
+                        text=source.read_text(encoding="utf-8"),
+                        metadata={
+                            "document_id": "source-doc",
+                            "source_path": str(source),
+                            "filename": "source.md",
+                            "file_type": "md",
+                            "knowledge_base_id": "finance",
+                        },
+                    )
+                ]
+            else:
+                self.documents = []
+            return self.documents
+
+    class FakePipeline:
+        def run(self, *, documents, show_progress=False):
+            observed["during_rebuild_docs"] = system.document_registry.list_public("finance")
+            observed["during_rebuild_updated_at"] = system.knowledge_base_registry.get("finance").updated_at
+            return [
+                TextNode(
+                    text="客户风险等级应与产品风险等级匹配",
+                    id_="source-doc-leaf",
+                    metadata={
+                        "document_id": "source-doc",
+                        "source_path": str(source),
+                        "filename": "source.md",
+                        "file_type": "md",
+                        "knowledge_base_id": "finance",
+                        "chunk_id": "source-doc-leaf",
+                        "chunk_level": 3,
+                        "chunk_idx": 0,
+                    },
+                )
+            ]
+
+    monkeypatch.setattr(nodes_module, "build_ingestion_pipeline", lambda *args, **kwargs: FakePipeline())
+
+    system.data_module = RecordingDataModule()
+    system.index_module = FakeIndexModule()
+    system.llama_docstore = SimpleNamespace(delete_knowledge_base=lambda knowledge_base_id: None, add_documents=lambda nodes: None)
+    system.generation_module = SimpleNamespace()
+    system._refresh_retrieval = lambda vector_index, leaf_nodes, knowledge_base_id: None
+
+    system.rebuild_from_sources("finance")
+
+    assert observed["during_rebuild_docs"][0]["status"] == "parsing"
+    assert observed["during_rebuild_updated_at"] != initial_updated_at
+    assert system.knowledge_base_registry.get("finance").updated_at != observed["during_rebuild_updated_at"]
 
 
 @requires_live_vector_stack

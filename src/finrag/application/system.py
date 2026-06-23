@@ -87,8 +87,6 @@ class FinRAGSystem:
         self.auto_merge_retriever: Optional[Any] = None
         # 混合检索器
         self.hybrid_retriever: Optional[Any] = None
-        # 摘要索引
-        self.summary_index: Optional[Any] = None
         # 顶部路由引擎
         self.router_engine: Optional[Any] = None
         # 每个知识库独立的运行时模块和检索引擎缓存
@@ -431,7 +429,6 @@ class FinRAGSystem:
             self.knowledge_query_engine = None
             self.auto_merge_retriever = None
             self.hybrid_retriever = None
-            self.summary_index = None
             self.router_engine = None
 
     def _delete_knowledge_base_source_dirs(self, knowledge_base_id: str) -> None:
@@ -627,7 +624,6 @@ class FinRAGSystem:
         self.knowledge_query_engine = runtime.knowledge_query_engine
         self.auto_merge_retriever = runtime.auto_merge_retriever
         self.hybrid_retriever = runtime.hybrid_retriever
-        self.summary_index = runtime.summary_index
         self.router_engine = runtime.router_engine
 
     def _active_runtime(self, knowledge_base_id: str | None = None) -> Optional[KnowledgeBaseRuntime]:
@@ -665,7 +661,6 @@ class FinRAGSystem:
             knowledge_query_engine=getattr(self, "knowledge_query_engine", None),
             auto_merge_retriever=getattr(self, "auto_merge_retriever", None),
             hybrid_retriever=getattr(self, "hybrid_retriever", None),
-            summary_index=getattr(self, "summary_index", None),
             router_engine=getattr(self, "router_engine", None),
         )
         self.kb_runtimes[scope.runtime_cache_key] = runtime
@@ -741,7 +736,6 @@ class FinRAGSystem:
             index_ids=["finrag-auto-merge"], # 索引 ID 列表
             document_count=len(public_docs), # 文档数量
             node_count=len(leaf_nodes), # 叶子节点数量
-            summary_document_count=len(public_docs) if self.summary_index is not None else 0, # 摘要文档数量
         )
 
     def _full_rebuild_locked(self, knowledge_base_id: str, *, sync_source_registry: bool = False) -> None:
@@ -764,9 +758,12 @@ class FinRAGSystem:
         restore_data_path = getattr(self.data_module, "data_path", self.config.data_path)
         # 如果同步从源注册目录加载文档，先清空数据模块的文档注册表
         if sync_source_registry:
+            # 标记所有文档为解析中
+            self._mark_rebuild_documents_parsing(knowledge_base_id)
+            # 刷新知识库更新时间
+            self._touch_knowledge_base(knowledge_base_id)
             self.data_module.document_registry = None
             self.data_module.data_path = str(self.knowledge_base_scope(knowledge_base_id).source_root)
-
         try:
             # 加载文档
             self.data_module.load_documents()
@@ -775,6 +772,16 @@ class FinRAGSystem:
                 # 恢复数据模块的文档注册表
                 self.data_module.document_registry = restore_registry
                 self.data_module.data_path = restore_data_path
+        if sync_source_registry:
+            # 从源注册目录加载文档
+            self._replace_registry_from_source_documents(
+                knowledge_base_id,
+                [],
+                status="parsing",
+                upload_time=utc_now_iso(),
+            )
+            # 刷新知识库更新时间
+            self._touch_knowledge_base(knowledge_base_id)
 
         # 如果没有文档，直接清空索引
         if not self.data_module.documents:
@@ -820,7 +827,7 @@ class FinRAGSystem:
         from llama_index.core.node_parser import get_leaf_nodes
         from finrag.indexing.nodes import build_ingestion_pipeline
 
-        vector_store = self.index_module.init_collection(reset=True)
+        self.index_module.init_collection(reset=True)
         # 是否使用语义分块
         use_semantic = getattr(self.config, "use_semantic_chunking", False)
         # 获取嵌入模型
@@ -830,8 +837,8 @@ class FinRAGSystem:
 
         # 构建 IngestionPipeline
         pipeline = build_ingestion_pipeline(
-            self.data_module, embed_model, vector_store,
-            self.llama_docstore,
+            self.data_module,
+            embed_model,
             use_semantic_chunking=use_semantic,
         )
         # 运行 IngestionPipeline，获取所有节点
@@ -840,6 +847,19 @@ class FinRAGSystem:
         leaf_nodes: list = get_leaf_nodes(all_nodes)
         self.data_module.all_nodes = all_nodes
         self.data_module.chunks = leaf_nodes
+        docstore = self.llama_docstore or getattr(self.data_module.storage_context, "docstore", None)
+        if docstore is not None:
+            delete_knowledge_base = getattr(docstore, "delete_knowledge_base", None)
+            if callable(delete_knowledge_base):
+                delete_knowledge_base(knowledge_base_id)
+            if all_nodes:
+                docstore.add_documents(all_nodes)
+        if leaf_nodes:
+            self.index_module.build_vector_index(
+                leaf_nodes,
+                storage_context=self.data_module.storage_context,
+                reset=False,
+            )
 
         # 如果同步从源注册目录加载文档，重写文档注册表
         if sync_source_registry:
@@ -848,7 +868,14 @@ class FinRAGSystem:
         self._replace_bm25_all_locked(knowledge_base_id, leaf_nodes)
         return leaf_nodes
 
-    def _replace_registry_from_source_documents(self, knowledge_base_id: str, leaf_nodes: List[TextNode]) -> None:
+    def _replace_registry_from_source_documents(
+        self,
+        knowledge_base_id: str,
+        leaf_nodes: List[TextNode],
+        *,
+        status: str = "indexed",
+        upload_time: Optional[str] = None,
+    ) -> None:
         """
         根据源目录加载结果重写文档注册表
         Args:
@@ -858,7 +885,7 @@ class FinRAGSystem:
             无返回值
         """
         assert self.data_module is not None
-        upload_time = utc_now_iso()
+        upload_time = upload_time or utc_now_iso()
 
         # 统计每个文档的分块数量
         chunk_count_by_document = Counter(
@@ -882,8 +909,8 @@ class FinRAGSystem:
                 file_type=str(metadata.get("file_type") or path.suffix.lower().lstrip(".")),
                 content_hash=compute_content_hash(path),
                 knowledge_base_id=str(metadata.get("knowledge_base_id") or knowledge_base_id),
-                status="indexed",
-                chunk_count=int(chunk_count_by_document.get(document_id, 0)),
+                status=status,
+                chunk_count=int(chunk_count_by_document.get(document_id, 0)) if status == "indexed" else 0,
                 upload_time=upload_time,
             )
         # 保留其他知识库的文档记录
@@ -894,6 +921,49 @@ class FinRAGSystem:
         }
         self.document_registry.records = {**preserved_records, **records}
         self.document_registry.save()
+
+    def _mark_rebuild_documents_parsing(self, knowledge_base_id: str) -> None:
+        """
+        将重建开始前已有的文档标记为解析中
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            无返回值
+        """
+        changed = False
+        for record in list(self.document_registry.records.values()):
+            if record.knowledge_base_id == knowledge_base_id and record.status != "deleted":
+                record.status = "parsing"
+                record.chunk_count = 0
+                record.last_error = None
+                changed = True
+        if changed:
+            self.document_registry.save()
+
+    def _mark_rebuild_documents_failed(self, knowledge_base_id: str, error: str) -> None:
+        """
+        将重建过程中处于解析中的文档标记为失败
+        Args:
+            knowledge_base_id: 知识库 ID
+            error: 失败原因
+        Returns:
+            无返回值
+        """
+        for record in list(self.document_registry.records.values()):
+            if record.knowledge_base_id == knowledge_base_id and record.status == "parsing":
+                self.document_registry.mark_failed(record.document_id, error)
+
+    def _touch_knowledge_base(self, knowledge_base_id: str) -> None:
+        """
+        刷新知识库更新时间，兼容测试替身未实现 touch 的情况
+        Args:
+            knowledge_base_id: 知识库 ID
+        Returns:
+            无返回值
+        """
+        touch = getattr(self.knowledge_base_registry, "touch", None)
+        if callable(touch):
+            touch(knowledge_base_id)
 
     def _replace_bm25_all_locked(self, knowledge_base_id: str, leaf_nodes: List[TextNode]) -> None:
         """
@@ -1153,20 +1223,14 @@ class FinRAGSystem:
                 runtime.hybrid_retriever = None
                 runtime.auto_merge_retriever = None
                 runtime.knowledge_query_engine = None
-                runtime.summary_index = None
                 runtime.router_engine = None
                 self._activate_runtime(runtime)
             else:
                 self.hybrid_retriever = None
                 self.auto_merge_retriever = None
                 self.knowledge_query_engine = None
-                self.summary_index = None
                 self.router_engine = None
             return
-        # 从数据模块获取所有文档
-        documents = getattr(self.data_module, "documents", None)
-        # 从索引模块获取嵌入模型
-        embed_model = getattr(self.index_module, "embed_model", None) if self.index_module is not None else None
         # 构建知识引擎组装器
         engines = build_knowledge_engines(
             vector_index=vector_index, # 向量索引对象
@@ -1174,22 +1238,18 @@ class FinRAGSystem:
             config=self.config, # 系统配置
             reranker=self.reranker, # 重排序模型
             llm=getattr(self.generation_module, "llm", None) if self.generation_module is not None else None, # LLM 模型
-            documents=list(documents) if documents else None, # 文档列表
-            embed_model=embed_model, # 嵌入模型
         )
         llm = getattr(self.generation_module, "llm", None) if self.generation_module is not None else None
         router_engine = build_top_router(system=self, llm=llm, knowledge_base_id=scope.knowledge_base_id)
         if runtime is not None:
             runtime.hybrid_retriever = engines.hybrid_retriever
             runtime.auto_merge_retriever = engines.auto_merge_retriever
-            runtime.summary_index = engines.summary_index
             runtime.knowledge_query_engine = engines.knowledge_query_engine
             runtime.router_engine = router_engine
             self._activate_runtime(runtime)
         else:
             self.hybrid_retriever = engines.hybrid_retriever
             self.auto_merge_retriever = engines.auto_merge_retriever
-            self.summary_index = engines.summary_index
             self.knowledge_query_engine = engines.knowledge_query_engine
             self.router_engine = router_engine
 

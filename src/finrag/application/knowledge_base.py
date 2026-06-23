@@ -192,7 +192,16 @@ class KnowledgeBaseService:
             knowledge_base_id = self._scope(knowledge_base_id).knowledge_base_id
             system._ensure_modules(knowledge_base_id)
             knowledge_base_id = system._configure_knowledge_base_scope_locked(knowledge_base_id)
-            system._full_rebuild_locked(knowledge_base_id, sync_source_registry=True)
+            try:
+                system._full_rebuild_locked(knowledge_base_id, sync_source_registry=True)
+            except Exception as exc:
+                if hasattr(system, "_mark_rebuild_documents_failed"):
+                    system._mark_rebuild_documents_failed(knowledge_base_id, system._format_exception(exc))
+                if hasattr(system, "_touch_knowledge_base"):
+                    system._touch_knowledge_base(knowledge_base_id)
+                raise
+            if hasattr(system, "_touch_knowledge_base"):
+                system._touch_knowledge_base(knowledge_base_id)
             manifest = system.index_module.load_manifest(knowledge_base_id) if system.index_module is not None else {}
             schema_version = int((manifest or {}).get("schema_version", 0) or 0)
             document_count = len(system.data_module.documents) if system.data_module is not None else 0

@@ -63,6 +63,7 @@ class DataPreparationModule:
             self.data_path, # 文档数据目录路径
             knowledge_base_id=self.knowledge_base_id, # 资料库 ID
             document_registry=self.document_registry, # 文档注册表
+            parser_registry=self._make_parser_registry(),
         )
         # 重置已加载状态
         self._reset_loaded_state()
@@ -103,7 +104,7 @@ class DataPreparationModule:
         if path.suffix.lower() not in SUPPORTED_SUFFIXES:
             return []
         # 加载文档内容
-        parsed_docs = ParserRegistry.default().load(
+        parsed_docs = self._make_parser_registry().load(
             path,
             knowledge_base_id=record.knowledge_base_id,
             data_root=source_root,
@@ -130,6 +131,10 @@ class DataPreparationModule:
         """
         root = Path(self.data_path)
         return root if is_path_within(path, root) else None
+
+    def _make_parser_registry(self) -> ParserRegistry:
+        """创建数据解析注册表"""
+        return ParserRegistry.default()
 
     def chunk_single_document(self, record: Any) -> tuple[List[TextNode], List[TextNode]]:
         """
@@ -170,6 +175,8 @@ class DataPreparationModule:
             all_nodes = self._chunk_with_semantic_splitter(documents)
         # 否则使用默认的层级分块器
         else:
+            # 先抽取 Markdown 表格等结构化元素
+            source_nodes = self._extract_markdown_element_nodes(documents)
             # 初始化层级分块器
             parser = HierarchicalNodeParser.from_defaults(
                 chunk_sizes=[max(self.chunk_size * 4, self.chunk_size), max(self.chunk_size * 2, self.chunk_size), self.chunk_size],
@@ -178,13 +185,29 @@ class DataPreparationModule:
             )
             all_nodes = [
                 node
-                for node in parser.get_nodes_from_documents(documents)
+                for node in parser(source_nodes)
                 if isinstance(node, TextNode)
             ]
         # 为层级节点重写稳定 chunk_id，并补充父子层级和溯源元数据
         self._assign_finrag_metadata(all_nodes)
         # 返回全部层级节点和叶子节点
         return all_nodes, get_leaf_nodes(all_nodes)
+
+    def _extract_markdown_element_nodes(self, documents: List[Document]) -> List[BaseNode]:
+        """
+        先抽取 Markdown 表格等结构化元素，避免后续按字符长度切碎表格
+        Args:
+            documents: 待切分的 Document 列表
+        Returns:
+            该文档解析得到的 LlamaIndex BaseNode 列表
+        """
+        try:
+            parser = LocalMarkdownElementNodeParser.create()
+            nodes = parser.get_nodes_from_documents(documents)
+        except Exception as exc:
+            logger.warning("Markdown 元素解析失败，回退为普通层级分块: %s", exc)
+            return list(documents)
+        return list(nodes) if nodes else list(documents)
 
     def _chunk_with_semantic_splitter(self, documents: List[Document]) -> List[TextNode]:
         """
@@ -241,6 +264,8 @@ class DataPreparationModule:
         for node in all_nodes:
             node.relationships = self._remap_relationships(node.relationships, old_to_new)
 
+        # 新节点 ID 映射回旧节点 ID，避免后续循环反复扫描 old_to_new
+        new_to_old = {new_id: old_id for old_id, new_id in old_to_new.items()}
         # 构建 node_id 到节点对象的映射
         nodes_by_id = {node.node_id: node for node in all_nodes}
         # 构建 leaf chunk ID 到索引的映射
@@ -251,7 +276,7 @@ class DataPreparationModule:
             metadata = self._node_metadata(node)
             document_id = str(metadata.get("document_id") or "")
             # 从旧节点 ID 映射中获取旧层级
-            old_level = level_by_old_id.get(next((old for old, new in old_to_new.items() if new == node.node_id), ""), 3)
+            old_level = level_by_old_id.get(new_to_old.get(node.node_id, ""), 3)
             # 从节点关系中获取新层级，优先级高于旧层级
             level = self._relationship_level(node) or old_level
             parent_id = node.parent_node.node_id if node.parent_node else node.node_id
@@ -410,11 +435,46 @@ class FinRAGMetadataTransform(TransformComponent):
         return node_list
 
 
+class LocalMarkdownElementNodeParser:
+    """本地 Markdown 表格元素解析器"""
+    @staticmethod
+    def create() -> TransformComponent:
+        """
+        创建本地 Markdown 表格元素解析器
+        Returns:
+            本地 Markdown 表格元素解析器
+        """
+        from llama_index.core.node_parser import MarkdownElementNodeParser
+        from llama_index.core.node_parser.relational.base_element import TableOutput
+
+        class _LocalParser(MarkdownElementNodeParser):
+            def extract_table_summaries(self, elements: List[Any]) -> None:
+                """
+                从 Markdown 元素中提取表格摘要
+                Args:
+                    elements: 包含 Markdown 元素的列表
+                """
+                # 遍历元素，提取表格摘要
+                for element in elements:
+                    # 如果元素是表格或表格文本，提取摘要并赋值
+                    if element.type in {"table", "table_text"}:
+                        element.table_output = TableOutput(
+                            # 表格摘要
+                            summary=str(element.element),
+                            # 表格列信息，置空为避免默认调用 LLM
+                            columns=[]
+                        )
+            # 异步提取表格摘要
+            async def aextract_table_summaries(self, elements: List[Any]) -> None:
+                self.extract_table_summaries(elements)
+
+        # 返回解析器实例，不包含元素附带的元数据
+        return _LocalParser.from_defaults(include_metadata=False)
+
+
 def build_ingestion_pipeline(
     data_module: Any,
     embed_model: Any,
-    vector_store: Any,
-    docstore: Any,
     *,
     use_semantic_chunking: bool = False,
 ) -> Any:
@@ -423,13 +483,11 @@ def build_ingestion_pipeline(
     Args:
         data_module: 数据模块，包含文档加载、分块和元数据处理
         embed_model: 嵌入模型，用于将文本转换为向量表示
-        vector_store: 向量存储，用于存储和检索向量表示
-        docstore: 文档存储，用于存储文档元数据
         use_semantic_chunking: 是否使用语义分块（默认 False）
     Returns:
         构建好的 IngestionPipeline
     """
-    from llama_index.core.ingestion import IngestionPipeline, DocstoreStrategy
+    from llama_index.core.ingestion import IngestionPipeline
 
     # 分块大小
     chunk_sizes = [
@@ -439,6 +497,9 @@ def build_ingestion_pipeline(
     ]
     # 转换链
     transformations: list[Any] = []
+
+    # 添加本地 Markdown 表格元素解析器
+    transformations.append(LocalMarkdownElementNodeParser.create())
 
     # 使用语义分块
     if use_semantic_chunking:
@@ -468,7 +529,4 @@ def build_ingestion_pipeline(
 
     return IngestionPipeline(
         transformations=transformations, # 转换链
-        vector_store=vector_store, # 向量存储
-        docstore=docstore, # 文档存储
-        docstore_strategy=DocstoreStrategy.UPSERTS, # 文档存储策略，更新或插入文档
     )

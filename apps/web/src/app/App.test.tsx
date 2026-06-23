@@ -87,6 +87,56 @@ const answerPayload = {
     },
     retrieved_nodes: [],
     evidence_nodes: [],
+    pipeline_steps: [
+      {
+        id: "query_router",
+        order: 1,
+        label: "",
+        detail: "",
+        status: "complete",
+        duration_ms: 12,
+        meta: {
+          route_type: "knowledge",
+          selected_query_engine: "knowledge_router",
+        },
+      },
+      {
+        id: "knowledge_engine",
+        order: 2,
+        label: "",
+        detail: "",
+        status: "complete",
+        duration_ms: null,
+        meta: {
+          route_type: "knowledge",
+          selected_knowledge_engine: "auto_merge",
+        },
+      },
+      {
+        id: "hybrid_search",
+        order: 3,
+        label: "",
+        detail: "",
+        status: "complete",
+        duration_ms: 24,
+        meta: {
+          hybrid_provider: "milvus",
+          hybrid_ranker: "RRFRanker",
+          candidate_k: 10,
+          top_k: 3,
+          rrf_k: 60,
+        },
+      },
+      {
+        id: "streaming_answer",
+        order: 7,
+        label: "",
+        detail: "",
+        status: "complete",
+        duration_ms: 0.03,
+        meta: { answer_chars: 121 },
+      },
+    ],
     events: [{ stage: "query_analysis" }],
     fusion: { fusion_provider: "llamaindex", fusion_mode: "reciprocal_rerank" },
     source_count: 1,
@@ -194,7 +244,7 @@ describe("FinRAG chat interface", () => {
     const stats = container.querySelector(".kb-stats") as HTMLElement;
     expect(within(stats).getByText("加载失败")).toHaveClass("kb-stat-value");
     expect(within(stats).queryByText("Finance")).not.toBeInTheDocument();
-    expect(within(stats).getByText("更新")).toHaveClass("kb-stat-label");
+    expect(within(stats).getByText("更新时间")).toHaveClass("kb-stat-label");
     expect(within(stats).queryByText("-")).not.toBeInTheDocument();
 
     await userEvent.click(retryButton);
@@ -220,12 +270,16 @@ describe("FinRAG chat interface", () => {
     expect(appStyles).toContain("grid-template-columns: 320px minmax(0, 1fr);");
     expect(appStyles).toContain(".app-layout.sidebar-collapsed");
     expect(appStyles).toContain(".left-rail.is-collapsed");
+    expect(appStyles).toMatch(/\.left-rail\s*\{[^}]*height: 100vh;[^}]*position: sticky;[^}]*top: 0;/s);
     expect(appStyles).toContain(".rail-card {");
     expect(appStyles).toContain("border: 1px solid var(--border);");
     expect(appStyles).toContain("border-radius: 16px;");
     expect(appStyles).toContain(".chat-panel.is-empty");
     expect(appStyles).toContain(".chat-composer-form.is-floating");
     expect(appStyles).toContain(".chat-composer-form.is-docked");
+    expect(appStyles).toMatch(/\.chat-panel:not\(\.is-empty\) \.chat-scroll\s*\{[^}]*padding-bottom: 130px;/s);
+    expect(appStyles).toMatch(/\.chat-composer-form\.is-docked\s*\{[^}]*position: fixed;[^}]*bottom: 0;[^}]*left: 320px;[^}]*right: 0;[^}]*z-index: 60;/s);
+    expect(appStyles).toMatch(/\.app-layout\.sidebar-collapsed \.chat-composer-form\.is-docked\s*\{[^}]*left: 64px;/s);
     expect(appStyles).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
     expect(appStyles).toContain("justify-self: center;");
     expect(appStyles).toContain("--kb-switch-width: 112px;");
@@ -237,7 +291,9 @@ describe("FinRAG chat interface", () => {
     expect(appStyles).toContain("justify-content: center;");
     expect(appStyles).toContain("position: absolute;");
     expect(appStyles).toContain("padding-left: 1px;");
-    expect(appStyles).toContain("justify-self: start;");
+    expect(appStyles).toContain("grid-template-columns: 16px minmax(0, 1fr) 16px;");
+    expect(appStyles).toMatch(/\.kb-switch-button span\s*\{[^}]*grid-column: 2;[^}]*justify-self: center;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;/s);
+    expect(appStyles).toMatch(/\.kb-switch-button svg\s*\{[^}]*grid-column: 3;/s);
     expect(appStyles).toContain(".kb-stat-label");
     expect(appStyles).toContain(".kb-stat-value");
     expect(appStyles).toContain(".kb-stat-item svg");
@@ -246,6 +302,9 @@ describe("FinRAG chat interface", () => {
     expect(appStyles).toMatch(/\.kb-stat-value\s*\{[^}]*color: var\(--muted\);/s);
     expect(appStyles).toMatch(/\.kb-stat-item svg\s*\{[^}]*color: var\(--text\);/s);
     expect(appStyles).toMatch(/\.kb-stat-divider\s*\{[^}]*color: var\(--text\);/s);
+    expect(appStyles).toMatch(/\.kb-stat-kb-name\s*\{[^}]*font-size: 14px;[^}]*line-height: 1;/s);
+    expect(appStyles).toMatch(/\.kb-stat-item\s*\{[^}]*align-items: center;[^}]*line-height: 1;/s);
+    expect(appStyles).not.toMatch(/\.kb-stat-item:last-of-type\s*\{[^}]*margin-top:/s);
     expect(appStyles).not.toContain("color-scheme: dark;");
     expect(appStyles).not.toContain('[data-theme="dark"]');
 
@@ -263,6 +322,7 @@ describe("FinRAG chat interface", () => {
     expect(
       within(sidebar).getByRole("region", { name: "实时检索链路" }),
     ).toHaveClass("rail-card");
+    expect(appStyles).toMatch(/\.timeline-inner\s*\{[^}]*overflow: auto;/s);
     expect(within(chat).getByText("文档就绪，随时提问")).toBeInTheDocument();
     const kbSwitchButton = within(sidebar).getByRole("button", {
       name: "切换知识库 finance",
@@ -404,8 +464,8 @@ describe("FinRAG chat interface", () => {
     expect(within(dialog).getByLabelText("policy.md")).toBeInTheDocument();
     const summaryRows = dialog.querySelectorAll(".upload-summary-row");
     expect(summaryRows).toHaveLength(1);
-    expect(within(summaryRows[0] as HTMLElement).getByText("文件")).toBeInTheDocument();
-    expect(within(summaryRows[0] as HTMLElement).getByText("大小")).toBeInTheDocument();
+    expect(within(summaryRows[0] as HTMLElement).getByText("文件：")).toBeInTheDocument();
+    expect(within(summaryRows[0] as HTMLElement).getByText("大小：")).toBeInTheDocument();
     expect(within(summaryRows[0] as HTMLElement).getByText("0.0 KB")).toBeInTheDocument();
     expect(dialog.querySelector(".upload-close-button")).toBeNull();
     expect(dialog.querySelector(".modal-action-button")).toBeNull();
@@ -607,7 +667,7 @@ describe("FinRAG chat interface", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "刷新知识库" }),
     );
-    const warmupMessage = await screen.findByText("确定要刷新 Finance 吗？");
+    const warmupMessage = await screen.findByText("确定要刷新 finance 吗？");
     const warmupDialog = warmupMessage.closest(".confirm-dialog") as HTMLElement;
     await userEvent.click(within(warmupDialog).getByRole("button", { name: "刷新" }));
 
@@ -673,7 +733,7 @@ describe("FinRAG chat interface", () => {
       screen.getByRole("menuitem", { name: "重建知识库" }),
     );
 
-    const message = await screen.findByText("确定要全量重建 Finance 吗？");
+    const message = await screen.findByText("确定要全量重建 finance 吗？");
     const dialog = message.closest(".confirm-dialog") as HTMLElement;
     expect(within(dialog).getByRole("button", { name: "取消" })).toHaveClass(
       "confirm-btn",
@@ -692,6 +752,64 @@ describe("FinRAG chat interface", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    const stats = document.querySelector(".kb-stats") as HTMLElement;
+    expect(await within(stats).findByText("11")).toHaveClass("kb-stat-value");
+  });
+
+  test("shows documents as parsing immediately while a full rebuild is starting", async () => {
+    const rebuildRequest = deferredResponse();
+    const fetchMock = mockInitialLoad().mockImplementationOnce(
+      () => rebuildRequest.promise,
+    );
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+    await userEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "重建知识库" }));
+    const message = await screen.findByText("确定要全量重建 finance 吗？");
+    const dialog = message.closest(".confirm-dialog") as HTMLElement;
+    await userEvent.click(within(dialog).getByRole("button", { name: "重建" }));
+
+    expect(await screen.findByText("解析中")).toBeInTheDocument();
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(knowledgeBasesPayload))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...readyPayload,
+          total_documents: 1,
+          total_chunks: 11,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          documents: [
+            {
+              ...documentsPayload.documents[0],
+              chunk_count: 11,
+            },
+          ],
+        }),
+      );
+    rebuildRequest.resolve(
+      jsonResponse({
+        job_id: "job-finance",
+        knowledge_base_id: "finance",
+        status: "succeeded",
+        created_at: "2026-06-20T00:00:00+00:00",
+        started_at: "2026-06-20T00:00:00+00:00",
+        completed_at: "2026-06-20T00:00:01+00:00",
+        error: null,
+        result: {
+          document_count: 1,
+          chunk_count: 11,
+          manifest_schema_version: 1,
+        },
+      }),
+    );
+
     const stats = document.querySelector(".kb-stats") as HTMLElement;
     expect(await within(stats).findByText("11")).toHaveClass("kb-stat-value");
   });
@@ -962,8 +1080,6 @@ describe("FinRAG chat interface", () => {
       .mockResolvedValueOnce(
         sseResponse([
           'event: analysis\ndata: {"route_type":"knowledge"}\n\n',
-          'event: pipeline_step\ndata: {"id":"query_analysis","order":1,"label":"Query Analysis","detail":"识别金融风控问题","status":"complete","duration_ms":12,"meta":{}}\n\n',
-          'event: pipeline_step\ndata: {"id":"hybrid_search","order":3,"label":"Milvus Hybrid Search","detail":"dense+sparse · candidate_k 10","status":"complete","duration_ms":24,"meta":{}}\n\n',
           'event: token\ndata: {"text":"客户风险等级应与产品风险等级匹配。"}\n\n',
           'event: token\ndata: {"text":"[1]"}\n\n',
           `event: source\ndata: {"source":${JSON.stringify(answerPayload.sources[0])}}\n\n`,
@@ -990,7 +1106,11 @@ describe("FinRAG chat interface", () => {
       "chat-bubble",
     );
     expect(
-      await screen.findByText("客户风险等级应与产品风险等级匹配。[1]"),
+      await screen.findByText(
+        "客户风险等级应与产品风险等级匹配。[1]",
+        {},
+        { timeout: 3000 },
+      ),
     ).toBeInTheDocument();
     expect(container.querySelector(".source-card")).toHaveTextContent(
       "policy.md",
@@ -998,7 +1118,19 @@ describe("FinRAG chat interface", () => {
     expect(
       container.querySelector(".chat-panel > .chat-composer-form"),
     ).toHaveClass("is-docked");
-    expect(screen.getByText("Milvus Hybrid Search")).toBeInTheDocument();
+    expect(await screen.findByText("请求路由分发")).toBeInTheDocument();
+    expect(await screen.findByText("选中：知识库路由")).toBeInTheDocument();
+    expect(await screen.findByText("知识库检索引擎")).toBeInTheDocument();
+    expect(await screen.findByText("选择：自动合并引擎")).toBeInTheDocument();
+    expect(await screen.findByText("多路混合召回")).toBeInTheDocument();
+    expect(await screen.findByText(/候选集数量 10/)).toBeInTheDocument();
+    expect(screen.queryByText(/available/i)).not.toBeInTheDocument();
+    expect(await screen.findByText("回答生成")).toBeInTheDocument();
+    expect(await screen.findByText("总字数 121 字")).toBeInTheDocument();
+    expect(screen.queryByText(/耗时 0\.00 秒/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/<0\.1 毫秒/)).toBeInTheDocument();
+    expect(screen.getAllByText("完成").length).toBeGreaterThan(0);
+    expect(container.querySelector(".step-number")).toBeNull();
     expect(screen.queryByText(/耗时/)).not.toBeInTheDocument();
   });
 
@@ -1065,10 +1197,11 @@ describe("FinRAG chat interface", () => {
     await userEvent.click(screen.getByRole("button", { name: /文档/ }));
 
     const stats = container.querySelector(".kb-stats") as HTMLElement;
-    expect(within(stats).getByText("Finance")).toHaveClass("kb-stat-value");
+    expect(within(stats).getByText("finance")).toHaveClass("kb-stat-value");
+    expect(within(stats).queryByText("Finance")).not.toBeInTheDocument();
     expect(within(stats).getByText("文档")).toHaveClass("kb-stat-label");
     expect(within(stats).getByText("总分块")).toHaveClass("kb-stat-label");
-    expect(within(stats).getByText("更新")).toHaveClass("kb-stat-label");
+    expect(within(stats).getByText("更新时间")).toHaveClass("kb-stat-label");
     expect(within(stats).getByText(/2026-06-18/)).toHaveClass("kb-stat-value");
     expect(within(stats).getByText("1")).toHaveClass("kb-stat-value");
     expect(within(stats).getByText("3")).toHaveClass("kb-stat-value");
@@ -1193,6 +1326,60 @@ describe("FinRAG chat interface", () => {
     await waitFor(
       () => {
         expect(screen.queryByText("解析中")).not.toBeInTheDocument();
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  test("polls for document status when a document is uploaded", async () => {
+    const uploadedPayload = {
+      documents: [
+        {
+          document_id: "doc-uploaded",
+          filename: "revenue_recognition_policy.txt",
+          file_type: "txt",
+          knowledge_base_id: "finance",
+          status: "uploaded",
+          chunk_count: 0,
+          upload_time: "2026-06-22T15:55:00.000000+00:00",
+          last_error: null,
+        },
+      ],
+    };
+
+    const indexedPayload = {
+      documents: [
+        {
+          document_id: "doc-uploaded",
+          filename: "revenue_recognition_policy.txt",
+          file_type: "txt",
+          knowledge_base_id: "finance",
+          status: "indexed",
+          chunk_count: 4,
+          upload_time: "2026-06-22T15:55:00.000000+00:00",
+          last_error: null,
+        },
+      ],
+    };
+
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(knowledgeBasesPayload))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse(uploadedPayload))
+      .mockResolvedValueOnce(jsonResponse(readyPayload))
+      .mockResolvedValueOnce(jsonResponse(indexedPayload));
+
+    render(<App />);
+
+    await screen.findByText("文档就绪，随时提问");
+    await userEvent.click(screen.getByRole("button", { name: /文档/ }));
+
+    expect(screen.getByText("已上传")).toBeInTheDocument();
+
+    await waitFor(
+      () => {
+        expect(screen.queryByText("已上传")).not.toBeInTheDocument();
+        expect(screen.getByText("已索引")).toBeInTheDocument();
       },
       { timeout: 5000 },
     );

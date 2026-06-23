@@ -379,6 +379,19 @@ class MemoryKnowledgeBaseRegistry:
         self.records[knowledge_base_id] = restored
         return restored
 
+    def touch(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        record = self.get(knowledge_base_id)
+        touched = KnowledgeBaseRecord(
+            knowledge_base_id=record.knowledge_base_id,
+            created_at=record.created_at,
+            updated_at=_utc_now_iso(),
+            status=record.status,
+            archived_at=record.archived_at,
+            deleted_at=record.deleted_at,
+        )
+        self.records[knowledge_base_id] = touched
+        return touched
+
     def mark_deleted(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
         record = self.get_optional(knowledge_base_id, include_deleted=True)
         if record is None:

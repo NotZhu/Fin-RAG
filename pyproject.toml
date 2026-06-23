@@ -20,7 +20,13 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "jieba>=0.42.1",
     "pypdf>=4.0.0",
+    "pymupdf>=1.24.0,<2.0.0",
     "python-docx>=1.1.0,<2.0.0",
+    "openpyxl>=3.1,<4",
+    "python-pptx>=1.0,<2",
+    "beautifulsoup4>=4.12,<5",
+    "pillow>=10,<12",
+    "pydantic>=2.10,<2.13",
     "python-multipart>=0.0.9,<1.0.0",
     "fastapi>=0.110.0,<1.0.0",
     "uvicorn[standard]>=0.29.0,<1.0.0",
@@ -52,3 +58,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 addopts = "-q -p no:cacheprovider --basetemp=.pytest-tmp-current"
+filterwarnings = [
+    "ignore:The 'validate_default' attribute with value True was provided to the `Field\\(\\)` function.*:pydantic.warnings.UnsupportedFieldAttributeWarning",
+]

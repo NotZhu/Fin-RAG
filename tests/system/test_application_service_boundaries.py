@@ -299,6 +299,45 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
     assert system.index_module is runtime.index_module
 
 
+def test_knowledge_base_initialization_does_not_pass_ocr_config_to_data_module(monkeypatch, tmp_path):
+    captured = {}
+    registry = SimpleNamespace(records={})
+
+    class FakeDataPreparationModule:
+        def __init__(self, data_path, **kwargs):
+            captured.update(kwargs)
+
+    class FakeIndexConstructionModule:
+        def __init__(self, **kwargs):
+            self.sparse_embedding_function = kwargs["sparse_embedding_function"]
+
+    class FakeGenerationIntegrationModule:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(knowledge_base_module, "DataPreparationModule", FakeDataPreparationModule)
+    monkeypatch.setattr(knowledge_base_module, "IndexConstructionModule", FakeIndexConstructionModule)
+    monkeypatch.setattr(knowledge_base_module, "GenerationIntegrationModule", FakeGenerationIntegrationModule)
+
+    system = SimpleNamespace(
+        config=RAGConfig(
+            data_path=str(tmp_path),
+        ),
+        document_registry=registry,
+        llama_docstore=object(),
+        bm25_store=None,
+        manifest_store=object(),
+        kb_runtimes={},
+        knowledge_base_scope=lambda knowledge_base_id: KnowledgeBaseScope.from_config(system.config, knowledge_base_id),
+    )
+
+    KnowledgeBaseService(system).initialize_system("risk")
+
+    assert "ocr_enabled" not in captured
+    assert "ocr_lang" not in captured
+    assert "tesseract_cmd" not in captured
+
+
 def test_build_knowledge_base_assumes_registry_management(tmp_path):
     calls = []
 
@@ -379,3 +418,80 @@ def test_rebuild_via_pipeline_propagates_pipeline_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="pipeline failed"):
         system._rebuild_via_pipeline("kb-finance")
+
+
+def test_rebuild_via_pipeline_stores_hierarchy_nodes_and_indexes_only_leaf_nodes(monkeypatch):
+    import finrag.indexing.nodes as nodes_module
+    from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
+
+    parent = TextNode(
+        text="parent node",
+        id_="parent-1",
+        metadata={
+            "document_id": "doc-1",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "parent-1",
+            "chunk_level": 2,
+            "chunk_idx": 0,
+        },
+        relationships={NodeRelationship.CHILD: [RelatedNodeInfo(node_id="leaf-1")]},
+    )
+    leaf = TextNode(
+        text="leaf node",
+        id_="leaf-1",
+        metadata={
+            "document_id": "doc-1",
+            "knowledge_base_id": "kb-finance",
+            "chunk_id": "leaf-1",
+            "chunk_level": 3,
+            "chunk_idx": 0,
+        },
+        relationships={NodeRelationship.PARENT: RelatedNodeInfo(node_id="parent-1")},
+    )
+    captured = {}
+
+    class FakePipeline:
+        def run(self, *, documents, show_progress=False):
+            captured["pipeline_documents"] = documents
+            return [parent, leaf]
+
+    class FakeDocstore:
+        def delete_knowledge_base(self, knowledge_base_id):
+            captured["deleted_kb"] = knowledge_base_id
+
+        def add_documents(self, nodes):
+            captured["stored_node_ids"] = [node.node_id for node in nodes]
+
+    class FakeIndexModule:
+        embed_model = object()
+
+        def init_collection(self, *, reset=False):
+            captured["init_reset"] = reset
+            return object()
+
+        def build_vector_index(self, nodes, *, storage_context=None, reset=True):
+            captured["indexed_node_ids"] = [node.node_id for node in nodes]
+            captured["index_reset"] = reset
+            return "vector-index"
+
+    monkeypatch.setattr(nodes_module, "build_ingestion_pipeline", lambda *args, **kwargs: FakePipeline())
+
+    system = FinRAGSystem.__new__(FinRAGSystem)
+    system.config = SimpleNamespace(use_semantic_chunking=False)
+    system.llama_docstore = FakeDocstore()
+    system.data_module = SimpleNamespace(
+        documents=[object()],
+        all_nodes=[],
+        chunks=[],
+        storage_context=object(),
+    )
+    system.index_module = FakeIndexModule()
+    system.bm25_store = None
+
+    leaf_nodes = system._rebuild_via_pipeline("kb-finance")
+
+    assert leaf_nodes == [leaf]
+    assert captured["deleted_kb"] == "kb-finance"
+    assert captured["stored_node_ids"] == ["parent-1", "leaf-1"]
+    assert captured["indexed_node_ids"] == ["leaf-1"]
+    assert captured["index_reset"] is False

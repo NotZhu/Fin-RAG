@@ -1,9 +1,7 @@
-import pytest
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
 from llama_index.core.vector_stores.types import VectorStoreQueryMode
 
 from finrag.retrieval.llamaindex_native import (
-    HybridRetrieverUnavailable,
     MilvusNativeHybridRetriever,
     SentenceAwareTokenBudgetPostprocessor,
 )
@@ -58,7 +56,12 @@ def test_milvus_native_hybrid_retriever_uses_milvus_hybrid_query_mode():
     assert call["sparse_top_k"] == 12
     assert call["hybrid_top_k"] == 12
     assert call["filters"].filters[0].key == "knowledge_base_id"
-    assert retriever.last_hybrid_trace == {
+    assert retriever.last_hybrid_trace["elapsed_ms"] >= 0
+    assert {
+        key: value
+        for key, value in retriever.last_hybrid_trace.items()
+        if key != "elapsed_ms"
+    } == {
         "hybrid_provider": "milvus",
         "hybrid_mode": "native_dense_sparse",
         "hybrid_ranker": "RRFRanker",
@@ -67,11 +70,23 @@ def test_milvus_native_hybrid_retriever_uses_milvus_hybrid_query_mode():
     }
 
 
-def test_milvus_native_hybrid_retriever_requires_sparse_schema():
-    vector_index = RecordingVectorIndex(enable_sparse=False)
+def test_milvus_native_hybrid_retriever_falls_back_to_dense_query_without_sparse_schema():
+    node = TextNode(id_="leaf-a", text="客户风险等级", metadata={"knowledge_base_id": "finance"})
+    vector_index = RecordingVectorIndex(
+        enable_sparse=False,
+        results=[NodeWithScore(node=node, score=0.8)],
+    )
 
-    with pytest.raises(HybridRetrieverUnavailable, match="hybrid_retriever_unavailable"):
-        MilvusNativeHybridRetriever(vector_index=vector_index)
+    retriever = MilvusNativeHybridRetriever(vector_index=vector_index)
+    results = retriever.retrieve("风险等级")
+
+    assert results[0].node.node_id == "leaf-a"
+    call = vector_index.calls[0]
+    assert call["vector_store_query_mode"] is VectorStoreQueryMode.DEFAULT
+    assert "sparse_top_k" not in call
+    assert "hybrid_top_k" not in call
+    assert retriever.last_hybrid_trace["hybrid_mode"] == "dense_only"
+    assert retriever.last_hybrid_trace["hybrid_ranker"] == "none"
 
 
 def test_sentence_aware_token_budget_drops_low_ranked_nodes_first():

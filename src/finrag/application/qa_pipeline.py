@@ -5,12 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from llama_index.core import Settings
-from llama_index.core.callbacks import CallbackManager
-
 from finrag.core.node_schema import TextNode
 from finrag.core.response_schema import FinRAGResponse, RAGTrace, RetrievedSource
-from finrag.retrieval.llamaindex_trace import FinRAGTraceHandler
 
 
 class QAPipelineService:
@@ -45,35 +41,6 @@ class QAPipelineService:
             if event_sink is not None:
                 event_sink({"type": event_type, **payload})
 
-        pipeline_steps: List[Dict[str, Any]] = []
-
-        def emit_step(
-            step_id: str,
-            order: int,
-            label: str,
-            detail: str,
-            status: str,
-            duration_ms: Optional[float] = None,
-            meta: Optional[Dict[str, Any]] = None,
-        ) -> Dict[str, Any]:
-            step = {
-                "id": step_id,
-                "order": order,
-                "label": label,
-                "detail": detail,
-                "status": status,
-                "duration_ms": round(float(duration_ms), 2) if duration_ms is not None else None,
-                "meta": dict(meta or {}),
-            }
-            for index, existing in enumerate(pipeline_steps):
-                if existing.get("id") == step_id:
-                    pipeline_steps[index] = step
-                    break
-            else:
-                pipeline_steps.append(step)
-            emit("pipeline_step", **step)
-            return step
-
         def check_cancelled() -> None:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("ask stream 已取消")
@@ -86,33 +53,23 @@ class QAPipelineService:
         # 检索策略
         strategy = getattr(system.config, "retrieval_strategy", "llamaindex_router")
         filters = self.knowledge_base_filters(system, knowledge_base_id)
-        analysis_start = time.perf_counter()
+        router_start = time.perf_counter()
 
-        emit_step("query_analysis", 1, "Query Analysis", "识别金融风控问题", "running")
         emit("analysis", route_type="pending", query=question, retrieval_strategy=strategy)
         check_cancelled()
-        analysis_ms = self.elapsed_ms(analysis_start)
-        emit_step(
-            "query_analysis",
-            1,
-            "Query Analysis",
-            "识别金融风控问题",
-            "complete",
-            analysis_ms,
-            {"retrieval_strategy": strategy},
-        )
 
         # 检查路由引擎是否初始化
         if system.router_engine is None:
-            emit_step(
-                "router",
-                2,
-                "Router: knowledge",
-                "router_engine 未初始化",
-                "error",
-                0.0,
-                {"route_type": "knowledge"},
-            )
+            pipeline_steps = [
+                self.trace_step(
+                    "query_router",
+                    1,
+                    "error",
+                    self.elapsed_ms(router_start),
+                    {"route_type": "knowledge", "selected_query_engine": "knowledge_router"},
+                    "router_engine 未初始化",
+                )
+            ]
             return self._knowledge_unavailable(
                 question=question,
                 strategy=strategy,
@@ -120,7 +77,7 @@ class QAPipelineService:
                 filters=filters,
                 error=RuntimeError("router_engine 未初始化"),
                 events=events,
-                timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+                timings_ms={"analysis": round(self.elapsed_ms(router_start), 2), "total": round(self.elapsed_ms(total_start), 2)},
                 pipeline_steps=pipeline_steps,
                 return_trace=return_trace,
                 emit=emit,
@@ -130,14 +87,11 @@ class QAPipelineService:
         return self._ask_via_router(
             question=question,
             strategy=strategy,
-            analysis_start=analysis_start,
             total_start=total_start,
             return_sources=return_sources, return_trace=return_trace,
-            knowledge_base_id=knowledge_base_id,
             filters=filters,
             events=events,
-            pipeline_steps=pipeline_steps,
-            emit=emit, emit_step=emit_step, check_cancelled=check_cancelled,
+            emit=emit, check_cancelled=check_cancelled,
         )
 
     def _ask_via_router(
@@ -145,16 +99,12 @@ class QAPipelineService:
         *,
         question: str,
         strategy: str,
-        analysis_start: float,
         total_start: float,
         return_sources: bool,
         return_trace: bool,
-        knowledge_base_id: str,
         filters: Dict[str, Any],
         events: List[Dict[str, Any]],
-        pipeline_steps: List[Dict[str, Any]],
         emit: Callable[..., None],
-        emit_step: Callable[..., Dict[str, Any]],
         check_cancelled: Callable[[], None],
     ) -> FinRAGResponse:
         """
@@ -162,11 +112,9 @@ class QAPipelineService:
         Args:
             question: 问题
             strategy: 检索策略
-            analysis_start: 分析开始时间
             total_start: 总开始时间
             return_sources: 是否返回来源列表
             return_trace: 是否返回轨迹
-            knowledge_base_id: 知识库ID
             events: trace 事件列表
             emit: 事件接收器
             check_cancelled: 取消事件检查函数
@@ -174,175 +122,350 @@ class QAPipelineService:
             FinRAGResponse: 问答响应
         """
         system = self.system
-        analysis_ms = self.elapsed_ms(analysis_start)
-        # 初始化轨迹处理程序
-        trace_handler = FinRAGTraceHandler()
-        # 保存旧的回调管理器
-        old_callback_manager = Settings.callback_manager
-        # 设置回调管理器为轨迹处理程序
-        Settings.callback_manager = CallbackManager([trace_handler])
-
+        query_start = time.perf_counter()
         try:
-            router_start = time.perf_counter()
-            emit_step("router", 2, "Router", "选择查询引擎", "running")
-            try:
-                # 执行路由查询
-                response_obj = system.router_engine.query(question)
-            except Exception as exc:
-                # 处理路由查询异常
-                emit_step(
-                    "router",
-                    2,
-                    "Router: knowledge",
-                    "查询路由失败",
+            # 交给 LlamaIndex router 完成路由、检索和生成
+            response_obj = system.router_engine.query(question)
+        except Exception as exc:
+            query_ms = self.elapsed_ms(query_start)
+            pipeline_steps = [
+                self.trace_step(
+                    "query_router",
+                    1,
                     "error",
-                    self.elapsed_ms(router_start),
-                    {"error": f"{exc.__class__.__name__}: {exc}"},
+                    query_ms,
+                    {"error": f"{exc.__class__.__name__}: {exc}", "selected_query_engine": "knowledge_router"},
+                    "查询路由失败",
                 )
-                return self._knowledge_unavailable(
-                    question=question, strategy=strategy, route_type="knowledge",
-                    filters=filters,
-                    error=exc, events=events,
-                    timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
-                    pipeline_steps=pipeline_steps,
-                    return_trace=return_trace, emit=emit,
-                )
-
-            # 从路由查询结果中提取检索节点
-            retrieved = list(getattr(response_obj, "source_nodes", []) or [])
-            # 从路由查询结果中提取证据节点
-            evidence_nodes: List[TextNode] = [item.node for item in retrieved]
-
-            # 确定路由类型
-            route_type = "knowledge" if evidence_nodes else "general"
-            # 确定查询引擎
-            selected_engine = "knowledge_router" if evidence_nodes else "general_engine"
-            emit_step(
-                "router",
-                2,
-                f"Router: {route_type}",
-                "命中知识库路由" if route_type == "knowledge" else "命中通用路由",
-                "complete",
-                self.elapsed_ms(router_start),
-                {"route_type": route_type, "selected_query_engine": selected_engine},
-            )
-            emit("route", route_type=route_type, selected_query_engine=selected_engine)
-            events.append({"stage": "route", "route_type": route_type, "selected_query_engine": selected_engine})
-            check_cancelled()
-
-            next_order = 3
-            if evidence_nodes:
-                hybrid_trace = dict(getattr(getattr(system, "hybrid_retriever", None), "last_hybrid_trace", {}) or {})
-                candidate_k = int(hybrid_trace.get("candidate_k") or getattr(system.config, "retrieval_candidate_k", 0) or 0)
-                retrieve_ms = self.first_trace_duration_ms(trace_handler.events, "retrieve")
-                emit_step(
-                    "hybrid_search",
-                    next_order,
-                    "Milvus Hybrid Search",
-                    f"dense+sparse · candidate_k {candidate_k}",
-                    "complete",
-                    retrieve_ms,
-                    hybrid_trace,
-                )
-                next_order += 1
-
-                reranker = getattr(system, "reranker", None)
-                reranker_provider = getattr(reranker, "provider", "") if reranker is not None else ""
-                if reranker is not None and reranker_provider and reranker_provider != "none":
-                    emit_step(
-                        "reranker",
-                        next_order,
-                        "Reranker",
-                        f"{reranker_provider} · top-n {getattr(system.config, 'reranker_top_n', '-')}",
-                        "complete",
-                        self.first_trace_duration_ms(trace_handler.events, "rerank"),
-                        {"provider": reranker_provider},
-                    )
-                    next_order += 1
-
-                if getattr(system, "auto_merge_retriever", None) is not None:
-                    emit_step(
-                        "auto_merge",
-                        next_order,
-                        "Auto Merge",
-                        "合并父级节点",
-                        "complete",
-                        None,
-                        {"simple_ratio_thresh": system.config.auto_merge_ratio_threshold},
-                    )
-                    next_order += 1
-
-            # 去重后的证据节点
-            evidence_start = time.perf_counter()
-            deduped_evidence_nodes = self.dedupe_evidence_nodes(evidence_nodes)
-            # 构建检索源列表
-            sources = self.build_sources(deduped_evidence_nodes, retrieved)
-            if evidence_nodes:
-                emit_step(
-                    "evidence_window",
-                    next_order,
-                    "Evidence Window",
-                    "构建引用证据",
-                    "complete",
-                    self.elapsed_ms(evidence_start),
-                    {"source_count": len(sources)},
-                )
-                next_order += 1
-            if return_sources:
-                for source in sources:
-                    emit("source", source=source.to_dict())
-
-            # 从路由查询结果中提取回答生成器
-            response_gen = getattr(response_obj, "response_gen", None)
-            # 从路由查询结果中提取回答流
-            answer_stream = response_gen if response_gen is not None else [str(response_obj)]
-            # 从回答流中提取回答
-            generation_start = time.perf_counter()
-            emit_step("streaming_answer", next_order, "Streaming Answer", "大模型生成中...", "running")
-            answer = self.emit_answer_stream(answer_stream, emit, check_cancelled)
-            emit_step(
-                "streaming_answer",
-                next_order,
-                "Streaming Answer",
-                "大模型生成完成",
-                "complete",
-                self.elapsed_ms(generation_start),
-                {"answer_chars": len(answer)},
-            )
-
-            # 确定最终决策
-            final_decision = "generate" if (evidence_nodes or route_type == "general") else "insufficient_evidence"
-
-            # 构建轨迹
-            trace = RAGTrace(
-                retrieval_strategy=strategy, 
-                route_type=route_type,
+            ]
+            # 处理路由查询异常
+            return self._knowledge_unavailable(
+                question=question, strategy=strategy, route_type="knowledge",
                 filters=filters,
-                timings_ms={"analysis": round(analysis_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+                error=exc, events=events,
+                timings_ms={"analysis": round(query_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
                 pipeline_steps=pipeline_steps,
-                retrieved_nodes=[self.node_trace(rank, item.node, item.score) for rank, item in enumerate(retrieved, 1)],
-                evidence_nodes=[self.node_trace(rank, node, None) for rank, node in enumerate(deduped_evidence_nodes, 1)],
-                events=events, 
-                source_count=len(sources),
-                reranker={"provider": getattr(system.reranker, "provider", "none") if getattr(system, "reranker", None) is not None else "none"},
-                auto_merge={"simple_ratio_thresh": system.config.auto_merge_ratio_threshold},
-                final_decision=final_decision,
-                llamaindex_events=trace_handler.events,
+                return_trace=return_trace, emit=emit,
             )
-            # 构建问答响应
-            response = FinRAGResponse(
-                question=question,
-                answer=answer,
-                sources=sources if return_sources else [],
-                trace=trace if return_trace else None,
-                retrieval_strategy=strategy,
-                route_type=route_type,
-            )
-            emit("done", response=response.to_dict(), final_decision=final_decision)
-            return response
-        finally:
-            # 恢复旧的回调管理器
-            Settings.callback_manager = old_callback_manager
+        query_ms = self.elapsed_ms(query_start)
+
+        # 从路由查询结果中提取检索节点
+        retrieved = list(getattr(response_obj, "source_nodes", []) or [])
+        # 从路由查询结果中提取证据节点
+        evidence_nodes: List[TextNode] = [item.node for item in retrieved]
+
+        # 从路由查询结果中提取选中的路由引擎
+        selected_engine = self.selected_route_engine(response_obj)
+        if not selected_engine:
+            selected_engine = "knowledge_router" if evidence_nodes else "general_router"
+        route_type = self.route_type_from_engine(selected_engine)
+        emit("route", route_type=route_type, selected_query_engine=selected_engine)
+        events.append({"stage": "route", "route_type": route_type, "selected_query_engine": selected_engine})
+        check_cancelled()
+
+        # 去重后的证据节点
+        evidence_start = time.perf_counter()
+        deduped_evidence_nodes = self.dedupe_evidence_nodes(evidence_nodes)
+        # 构建检索源列表
+        sources = self.build_sources(deduped_evidence_nodes, retrieved)
+        evidence_ms = self.elapsed_ms(evidence_start)
+        if return_sources:
+            for source in sources:
+                emit("source", source=source.to_dict())
+
+        # 从路由查询结果中提取回答生成器
+        response_gen = getattr(response_obj, "response_gen", None)
+        # 从路由查询结果中提取回答流
+        answer_stream = response_gen if response_gen is not None else [str(response_obj)]
+        # 从回答流中提取回答
+        generation_start = time.perf_counter()
+        answer = self.emit_answer_stream(answer_stream, emit, check_cancelled)
+        generation_ms = self.elapsed_ms(generation_start)
+        hybrid_trace = dict(getattr(getattr(system, "hybrid_retriever", None), "last_hybrid_trace", {}) or {})
+        pipeline_steps = self.build_pipeline_steps(
+            system=system,
+            route_type=route_type,
+            selected_engine=selected_engine,
+            selected_knowledge_engine=self.selected_inner_engine(response_obj) or "auto_merge",
+            has_evidence=bool(evidence_nodes),
+            query_ms=query_ms,
+            retrieve_ms=self.safe_optional_float(hybrid_trace.get("elapsed_ms")),
+            ranking_ms=self.ranking_postprocess_duration_ms(system),
+            evidence_ms=evidence_ms,
+            generation_ms=generation_ms,
+            answer_chars=len(answer),
+            source_count=len(sources),
+            evidence_count=len(deduped_evidence_nodes),
+            hybrid_trace=hybrid_trace,
+        )
+
+        # 确定最终决策
+        final_decision = "generate" if (evidence_nodes or route_type == "general") else "insufficient_evidence"
+
+        # 构建轨迹
+        trace = RAGTrace(
+            retrieval_strategy=strategy,
+            route_type=route_type,
+            filters=filters,
+            timings_ms={"analysis": round(query_ms, 2), "total": round(self.elapsed_ms(total_start), 2)},
+            pipeline_steps=pipeline_steps,
+            retrieved_nodes=[self.node_trace(rank, item.node, item.score) for rank, item in enumerate(retrieved, 1)],
+            evidence_nodes=[self.node_trace(rank, node, None) for rank, node in enumerate(deduped_evidence_nodes, 1)],
+            events=events,
+            source_count=len(sources),
+            reranker={"provider": getattr(system.reranker, "provider", "none") if getattr(system, "reranker", None) is not None else "none"},
+            auto_merge={"simple_ratio_thresh": system.config.auto_merge_ratio_threshold},
+            final_decision=final_decision,
+        )
+        # 构建问答响应
+        response = FinRAGResponse(
+            question=question,
+            answer=answer,
+            sources=sources if return_sources else [],
+            trace=trace if return_trace else None,
+            retrieval_strategy=strategy,
+            route_type=route_type,
+        )
+        emit("done", response=response.to_dict(), final_decision=final_decision)
+        return response
+
+    @staticmethod
+    def trace_step(
+        step_id: str,
+        order: int,
+        status: str,
+        duration_ms: Optional[float] = None,
+        meta: Optional[Dict[str, Any]] = None,
+        detail: str = "",
+    ) -> Dict[str, Any]:
+        """
+        构建最终 trace 中的链路步骤
+        Args:
+            step_id: 步骤 ID
+            order: 展示顺序
+            status: 步骤状态
+            duration_ms: 步骤耗时
+            meta: 步骤元数据
+            detail: 错误等必要详情
+        Returns:
+            trace step 字典
+        """
+        return {
+            "id": step_id,
+            "order": order,
+            "label": "",
+            "detail": detail,
+            "status": status,
+            "duration_ms": round(float(duration_ms), 2) if duration_ms is not None else None,
+            "meta": dict(meta or {}),
+        }
+
+    def build_pipeline_steps(
+        self,
+        *,
+        system: Any,
+        route_type: str,
+        selected_engine: str,
+        selected_knowledge_engine: str,
+        has_evidence: bool,
+        query_ms: float,
+        retrieve_ms: Optional[float],
+        ranking_ms: Optional[float],
+        evidence_ms: float,
+        generation_ms: float,
+        answer_chars: int,
+        source_count: int,
+        evidence_count: int,
+        hybrid_trace: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        根据最终查询结果构建完整链路快照
+        Args:
+            system: 系统对象
+            route_type: 路由类型
+            selected_engine: 顶层路由选择
+            selected_knowledge_engine: 知识库内查询引擎
+            has_evidence: 是否有知识库证据
+            query_ms: 路由查询总耗时
+            retrieve_ms: LlamaIndex 检索耗时
+            ranking_ms: 精排和后处理耗时
+            evidence_ms: 证据整理耗时
+            generation_ms: 回答输出耗时
+            answer_chars: 回答字符数
+            source_count: 来源数量
+            evidence_count: 证据片段数量
+            hybrid_trace: 混合召回元数据
+        Returns:
+            完整 pipeline step 列表
+        """
+        knowledge_status = "complete" if route_type == "knowledge" else "skipped"
+        evidence_status = "complete" if has_evidence else "skipped"
+        return [
+            self.trace_step(
+                "query_router",
+                1,
+                "complete",
+                query_ms,
+                {"route_type": route_type, "selected_query_engine": selected_engine},
+            ),
+            self.trace_step(
+                "knowledge_engine",
+                2,
+                knowledge_status,
+                None,
+                {"route_type": route_type, "selected_knowledge_engine": selected_knowledge_engine},
+            ),
+            self.trace_step(
+                "hybrid_search",
+                3,
+                evidence_status,
+                retrieve_ms if has_evidence else None,
+                self.hybrid_search_meta(system, hybrid_trace if has_evidence else {}),
+            ),
+            self.trace_step(
+                "ranking_postprocess",
+                4,
+                evidence_status,
+                ranking_ms if has_evidence else None,
+                self.ranking_postprocess_meta(system),
+            ),
+            self.trace_step(
+                "context_expansion",
+                5,
+                evidence_status,
+                None,
+                self.context_expansion_meta(system),
+            ),
+            self.trace_step(
+                "evidence_window",
+                6,
+                evidence_status,
+                evidence_ms if has_evidence else None,
+                {"source_count": source_count, "evidence_count": evidence_count},
+            ),
+            self.trace_step(
+                "streaming_answer",
+                7,
+                "complete",
+                generation_ms,
+                {"answer_chars": answer_chars},
+            ),
+        ]
+
+    @staticmethod
+    def selected_inner_engine(response_obj: Any) -> str:
+        """
+        提取选中的知识引擎
+        Args:
+            response_obj: 问答响应对象
+        Returns:
+            选中的知识引擎字符串
+        """
+        metadata = getattr(response_obj, "metadata", {}) or {}
+        for key in ("selected_knowledge_engine", "selected_engine", "selected_tool", "tool_name"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def selected_route_engine(response_obj: Any) -> str:
+        """
+        提取顶层路由选中的查询引擎
+        """
+        metadata = getattr(response_obj, "metadata", {}) or {}
+        for key in ("selected_query_engine", "selected_route_engine", "route_engine"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        route_type = str(metadata.get("route_type") or "")
+        if route_type == "knowledge":
+            return "knowledge_router"
+        if route_type == "general":
+            return "general_router"
+        return ""
+
+    @staticmethod
+    def route_type_from_engine(selected_engine: str) -> str:
+        """
+        从选中的查询引擎中提取路由类型
+        Args:
+            selected_engine: 选中的查询引擎字符串
+        Returns:
+            路由类型字符串
+        """
+        if str(selected_engine) in {"general", "general_router"}:
+            return "general"
+        return "knowledge"
+
+    @staticmethod
+    def hybrid_search_meta(system: Any, hybrid_trace: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        提取混合召回元数据
+        Args:
+            system: 系统对象
+            hybrid_trace: 混合搜索轨迹字典
+        Returns:
+            混合召回元数据字典
+        """
+        config = getattr(system, "config", None)
+        return {
+            "hybrid_provider": hybrid_trace.get("hybrid_provider", "milvus"),
+            "hybrid_mode": hybrid_trace.get("hybrid_mode", "native_dense_sparse"),
+            "hybrid_ranker": hybrid_trace.get("hybrid_ranker", "RRFRanker"),
+            "candidate_k": hybrid_trace.get("candidate_k", getattr(config, "retrieval_candidate_k", None)),
+            "top_k": getattr(config, "top_k", None),
+            "rrf_k": hybrid_trace.get("rrf_k", getattr(config, "rrf_k", None)),
+        }
+
+    @staticmethod
+    def ranking_postprocess_meta(system: Any) -> Dict[str, Any]:
+        """
+        提取排名后处理元数据
+        Args:
+            system: 系统对象
+        Returns:
+            排名后处理元数据字典
+        """
+        config = getattr(system, "config", None)
+        reranker = getattr(system, "reranker", None)
+        reranker_provider = getattr(reranker, "provider", "none") if reranker is not None else "none"
+        return {
+            "score_threshold": getattr(config, "score_threshold", None),
+            "reranker_provider": reranker_provider,
+            "reranker_top_n": getattr(config, "reranker_top_n", None),
+            "context_token_budget": getattr(config, "context_token_budget", None),
+            "prev_next": getattr(config, "neighbor_window", 1),
+        }
+
+    @staticmethod
+    def ranking_postprocess_duration_ms(system: Any) -> Optional[float]:
+        """
+        获取精排与后处理耗时；Jina 兼容 reranker 使用自身记录的真实 HTTP 调用耗时
+        Args:
+            system: 系统对象
+        Returns:
+            耗时毫秒数；无法获取时返回 None
+        """
+        reranker = getattr(system, "reranker", None)
+        reranker_provider = getattr(reranker, "provider", "") if reranker is not None else ""
+        if reranker is not None and reranker_provider and reranker_provider != "none":
+            elapsed_ms = getattr(reranker, "last_elapsed_ms", None)
+            if elapsed_ms is not None:
+                return QAPipelineService.safe_score(elapsed_ms)
+        return None
+
+    @staticmethod
+    def context_expansion_meta(system: Any) -> Dict[str, Any]:
+        """
+        提取上下文扩展元数据
+        Args:
+            system: 系统对象
+        Returns:
+            上下文扩展元数据字典
+        """
+        config = getattr(system, "config", None)
+        return {"simple_ratio_thresh": getattr(config, "auto_merge_ratio_threshold", None)}
 
     def _knowledge_unavailable(
         self,
@@ -410,8 +533,6 @@ class QAPipelineService:
             return "milvus_unavailable"
         if "embedding" in text or "dashscope_api_key" in text:
             return "embedding_unavailable"
-        if "summary" in text:
-            return "summary_llm_unavailable"
         return "knowledge_unavailable"
 
     @staticmethod
@@ -559,12 +680,12 @@ class QAPipelineService:
             return default
 
     @staticmethod
-    def elapsed_ms(start_time: float) -> float:
-        return (time.perf_counter() - start_time) * 1000
+    def safe_optional_float(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
-    def first_trace_duration_ms(events: Iterable[Dict[str, Any]], event_type: str) -> Optional[float]:
-        for event in events:
-            if str(event.get("event_type") or "").lower() == event_type and event.get("duration_ms") is not None:
-                return QAPipelineService.safe_score(event.get("duration_ms"))
-        return None
+    def elapsed_ms(start_time: float) -> float:
+        return (time.perf_counter() - start_time) * 1000

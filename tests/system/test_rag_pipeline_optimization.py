@@ -1,7 +1,9 @@
 """Tests for LlamaIndex-first knowledge query engine path in QAPipelineService."""
 
+import time
 from types import SimpleNamespace
 
+from llama_index.core import Settings
 from llama_index.core.schema import NodeWithScore, TextNode
 
 from finrag.core.config import RAGConfig
@@ -17,25 +19,48 @@ class FakeGeneration:
 class FakeRouterEngine:
     """Mock top-level LlamaIndex router engine returning pre-set result nodes."""
 
-    def __init__(self, results, *, answer="根据证据回答[1]", response_gen=None, error=None):
+    def __init__(
+        self,
+        results,
+        *,
+        answer="根据证据回答[1]",
+        response_gen=None,
+        error=None,
+        delay_seconds=0.0,
+        selected_query_engine=None,
+        on_query=None,
+    ):
         self.results = results
         self.answer = answer
         self.response_gen = response_gen
         self.error = error
+        self.delay_seconds = delay_seconds
+        self.selected_query_engine = selected_query_engine or ("knowledge_router" if results else "general_router")
+        self.on_query = on_query
         self.calls = []
 
     def query(self, query_str):
         self.calls.append(str(query_str))
+        if self.on_query is not None:
+            self.on_query()
         if self.error is not None:
             raise self.error
-        return FakeResponse(self.results, answer=self.answer, response_gen=self.response_gen)
+        if self.delay_seconds:
+            time.sleep(self.delay_seconds)
+        return FakeResponse(
+            self.results,
+            answer=self.answer,
+            response_gen=self.response_gen,
+            metadata={"selected_query_engine": self.selected_query_engine},
+        )
 
 
 class FakeResponse:
-    def __init__(self, source_nodes, *, answer, response_gen=None):
+    def __init__(self, source_nodes, *, answer, response_gen=None, metadata=None):
         self.source_nodes = source_nodes
         self.response_gen = response_gen
         self.response = answer
+        self.metadata = dict(metadata or {})
 
     def __str__(self):
         return self.response
@@ -170,6 +195,27 @@ def test_router_general_route_without_sources(tmp_path):
     assert payload["route_type"] == "general"
     assert payload["sources"] == []
     assert payload["trace"]["final_decision"] == "generate"
+    query_router = next(
+        step for step in payload["trace"]["pipeline_steps"] if step["id"] == "query_router"
+    )
+    assert query_router["detail"] == ""
+    assert query_router["meta"]["selected_query_engine"] == "general_router"
+
+
+def test_knowledge_route_is_preserved_when_retrieval_returns_no_sources(tmp_path):
+    engine = FakeRouterEngine([], answer="当前资料不足", selected_query_engine="knowledge_router")
+    system = _setup_knowledge_system(tmp_path, engine)
+
+    response = system.ask_question("如果我想判断公司收入质量好不好，应该重点看哪些财务信号？", knowledge_base_id="kb-finance", return_trace=True)
+    payload = response.to_dict()
+
+    assert payload["route_type"] == "knowledge"
+    assert payload["trace"]["final_decision"] == "insufficient_evidence"
+    query_router = next(
+        step for step in payload["trace"]["pipeline_steps"] if step["id"] == "query_router"
+    )
+    assert query_router["detail"] == ""
+    assert query_router["meta"]["selected_query_engine"] == "knowledge_router"
 
 
 def test_general_route_bypasses_knowledge_engine(tmp_path):
@@ -229,7 +275,7 @@ def test_analysis_event_sent_before_query(tmp_path):
     assert route_events[0]["route_type"] == "knowledge"
 
 
-def test_pipeline_step_events_and_trace_are_emitted_for_router_path(tmp_path):
+def test_pipeline_steps_are_only_returned_in_final_trace(tmp_path):
     node = _knowledge_node("客户风险等级应与产品风险等级匹配", "leaf-1")
     engine = FakeRouterEngine(
         [NodeWithScore(node=node, score=0.9)],
@@ -247,16 +293,83 @@ def test_pipeline_step_events_and_trace_are_emitted_for_router_path(tmp_path):
     )
     payload = response.to_dict()
 
-    step_events = [event for event in events if event["type"] == "pipeline_step"]
+    assert [event["type"] for event in events] == [
+        "analysis",
+        "route",
+        "source",
+        "token",
+        "token",
+        "token",
+        "done",
+    ]
+    step_events = payload["trace"]["pipeline_steps"]
     step_ids = [event["id"] for event in step_events]
-    assert "query_analysis" in step_ids
-    assert "router" in step_ids
+    assert "query_router" in step_ids
+    assert "knowledge_engine" in step_ids
     assert "hybrid_search" in step_ids
+    assert "ranking_postprocess" in step_ids
+    assert "context_expansion" in step_ids
     assert "evidence_window" in step_ids
     assert "streaming_answer" in step_ids
-    assert any(event["id"] == "streaming_answer" and event["status"] == "running" for event in step_events)
+    query_router = next(event for event in step_events if event["id"] == "query_router" and event["status"] == "complete")
+    assert query_router["label"] == ""
+    assert query_router["detail"] == ""
+    assert query_router["meta"]["selected_query_engine"] == "knowledge_router"
+    knowledge_engine = next(event for event in step_events if event["id"] == "knowledge_engine" and event["status"] == "complete")
+    assert knowledge_engine["label"] == ""
+    assert "available:" not in knowledge_engine["detail"]
+    assert knowledge_engine["detail"] == ""
+    assert knowledge_engine["meta"]["selected_knowledge_engine"] == "auto_merge"
+    hybrid = next(event for event in step_events if event["id"] == "hybrid_search" and event["status"] == "complete")
+    assert hybrid["label"] == ""
+    assert hybrid["detail"] == ""
+    assert hybrid["meta"]["candidate_k"] == system.config.retrieval_candidate_k
+    ranking = next(event for event in step_events if event["id"] == "ranking_postprocess" and event["status"] == "complete")
+    assert ranking["label"] == ""
+    assert ranking["detail"] == ""
+    assert "reranker_provider" in ranking["meta"]
     assert any(event["id"] == "streaming_answer" and event["status"] == "complete" for event in step_events)
+    streaming_answer = next(event for event in step_events if event["id"] == "streaming_answer" and event["status"] == "complete")
+    assert "耗时" not in streaming_answer["detail"]
     assert payload["trace"]["pipeline_steps"][-1]["id"] == "streaming_answer"
+
+
+def test_router_query_does_not_replace_global_callback_manager(tmp_path):
+    original_callback_manager = Settings.callback_manager
+
+    node = _knowledge_node("客户风险等级应与产品风险等级匹配", "leaf-1")
+    observed_callback_managers = []
+    engine = FakeRouterEngine(
+        [NodeWithScore(node=node, score=0.9)],
+        on_query=lambda: observed_callback_managers.append(Settings.callback_manager),
+    )
+    system = _setup_knowledge_system(tmp_path, engine)
+
+    system.ask_question("客户风险等级如何匹配？", knowledge_base_id="kb-finance", return_trace=True)
+
+    assert observed_callback_managers == [original_callback_manager]
+    assert Settings.callback_manager is original_callback_manager
+
+
+def test_ranking_postprocess_uses_jina_reranker_elapsed_time(tmp_path):
+    node = _knowledge_node("客户风险等级应与产品风险等级匹配", "leaf-1")
+    engine = FakeRouterEngine([NodeWithScore(node=node, score=0.9)])
+    system = _setup_knowledge_system(tmp_path, engine)
+    system.reranker = SimpleNamespace(provider="jina", last_elapsed_ms=88.8)
+
+    response = system.ask_question(
+        "客户风险等级如何匹配？",
+        knowledge_base_id="kb-finance",
+        return_trace=True,
+    )
+    payload = response.to_dict()
+
+    ranking = next(
+        step
+        for step in payload["trace"]["pipeline_steps"]
+        if step["id"] == "ranking_postprocess"
+    )
+    assert ranking["duration_ms"] == 88.8
 
 
 def test_knowledge_unavailable_returns_structured_error(tmp_path):
@@ -281,10 +394,9 @@ def test_knowledge_unavailable_returns_structured_error(tmp_path):
     assert error_events[0]["retryable"] is True
     done_events = [e for e in events if e["type"] == "done"]
     assert len(done_events) == 1
-    assert any(
-        event["type"] == "pipeline_step" and event["id"] == "router" and event["status"] == "error"
-        for event in events
-    )
+    assert [event["type"] for event in events] == ["analysis", "error", "done"]
+    assert payload["trace"]["pipeline_steps"][0]["id"] == "query_router"
+    assert payload["trace"]["pipeline_steps"][0]["status"] == "error"
 
 
 def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
@@ -302,11 +414,9 @@ def test_missing_router_engine_does_not_fall_back_to_query_analysis(tmp_path):
     assert payload["trace"]["final_decision"] == "knowledge_unavailable"
     assert payload["trace"]["events"][0]["stage"] == "error"
     assert "router_engine" in payload["trace"]["events"][0]["message"]
-    assert [event["type"] for event in events if event["type"] != "pipeline_step"] == ["analysis", "error", "done"]
-    assert any(
-        event["type"] == "pipeline_step" and event["id"] == "router" and event["status"] == "error"
-        for event in events
-    )
+    assert [event["type"] for event in events] == ["analysis", "error", "done"]
+    assert payload["trace"]["pipeline_steps"][0]["id"] == "query_router"
+    assert payload["trace"]["pipeline_steps"][0]["status"] == "error"
 
 
 def test_ask_question_does_not_fallback_to_another_knowledge_base_runtime(tmp_path):

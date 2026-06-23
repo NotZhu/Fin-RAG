@@ -74,6 +74,7 @@ class RAGConfig:
     reranker_top_n: int = 3 # 重排序后最终返回给 LLM 的证据块数量
     auto_merge_ratio_threshold: float = 0.5 # 自动合并检索器阈值
     context_token_budget: int = 2400 # 上下文 token 硬预算
+    neighbor_window: int = 1 # 前后相邻节点扩展数量
     use_semantic_chunking: bool = False # 是否启用语义切分
     max_upload_bytes: int = 20 * 1024 * 1024 # 单个上传文件最大字节数
 
@@ -135,6 +136,7 @@ class RAGConfig:
         self.reranker_top_n = int(self.reranker_top_n)
         self.auto_merge_ratio_threshold = float(self.auto_merge_ratio_threshold)
         self.context_token_budget = int(self.context_token_budget)
+        self.neighbor_window = max(int(self.neighbor_window), 0)
         self.use_semantic_chunking = self._to_bool(self.use_semantic_chunking)
         self.max_upload_bytes = int(self.max_upload_bytes)
         self.temperature = float(self.temperature)
@@ -187,6 +189,7 @@ class RAGConfig:
             "reranker_top_n": "RAG_RERANKER_TOP_N", # 重排序器返回结果数量
             "auto_merge_ratio_threshold": "RAG_AUTO_MERGE_RATIO_THRESHOLD", # 自动合并阈值
             "context_token_budget": "RAG_CONTEXT_TOKEN_BUDGET", # 上下文令牌预算
+            "neighbor_window": "RAG_NEIGHBOR_WINDOW", # 前后相邻节点扩展数量
             "use_semantic_chunking": "RAG_USE_SEMANTIC_CHUNKING", # 是否启用语义分块
             "max_upload_bytes": "RAG_MAX_UPLOAD_BYTES",  # 最大上传文件大小（字节）
             "temperature": "RAG_TEMPERATURE", # 温度参数
@@ -232,6 +235,8 @@ class RAGConfig:
             'reranker_top_n': self.reranker_top_n,
             'auto_merge_ratio_threshold': self.auto_merge_ratio_threshold,
             'context_token_budget': self.context_token_budget,
+            'neighbor_window': self.neighbor_window,
+            'use_semantic_chunking': self.use_semantic_chunking,
             'max_upload_bytes': self.max_upload_bytes,
             'temperature': self.temperature,
             'max_tokens': self.max_tokens

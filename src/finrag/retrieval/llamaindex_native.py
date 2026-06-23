@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from llama_index.core.base.base_retriever import BaseRetriever
@@ -54,8 +55,8 @@ class MilvusNativeHybridRetriever(BaseRetriever):
         self.top_k = max(int(top_k), 1) # 返回数量
         self.rrf_k = int(rrf_k) # RRF 算法参数
         self.filters = dict(filters or {}) # 元数据筛选条件
-        self.last_hybrid_trace: Dict[str, Any] = {} # 最后一次混合检索的跟踪信息
-        self._ensure_sparse_vector_store() # 确保向量存储支持稀疏向量
+        self.last_hybrid_trace: Dict[str, Any] = {} # 最后一次检索的跟踪信息
+        self._get_vector_store() # 确保向量存储可用
         super().__init__(callback_manager=callback_manager) # 初始化父类，设置回调管理器
 
     def _retrieve(self, query_bundle: QueryBundle) -> List[NodeWithScore]:
@@ -66,40 +67,43 @@ class MilvusNativeHybridRetriever(BaseRetriever):
         Returns:
             包含节点和分数的列表
         """
-        vector_store = self._ensure_sparse_vector_store()
+        vector_store = self._get_vector_store()
         metadata_filters = build_metadata_filters(self.filters)
+        use_sparse = bool(getattr(vector_store, "enable_sparse", False))
         kwargs: Dict[str, Any] = {
-            "vector_store_query_mode": VectorStoreQueryMode.HYBRID,
+            "vector_store_query_mode": VectorStoreQueryMode.HYBRID if use_sparse else VectorStoreQueryMode.DEFAULT,
             "similarity_top_k": self.candidate_k,
-            "sparse_top_k": self.candidate_k,
-            "hybrid_top_k": self.candidate_k,
         }
+        if use_sparse:
+            kwargs["sparse_top_k"] = self.candidate_k
+            kwargs["hybrid_top_k"] = self.candidate_k
         if metadata_filters is not None:
             kwargs["filters"] = metadata_filters
         retriever = self.vector_index.as_retriever(**kwargs)
+        started = time.perf_counter()
         results = retriever.retrieve(query_bundle)
         filtered = [item for item in results if _matches_filters(item.node, self.filters)]
         filtered.sort(key=lambda item: float(item.score or 0.0), reverse=True)
+        elapsed_ms = (time.perf_counter() - started) * 1000
         self.last_hybrid_trace = {
             "hybrid_provider": "milvus",
-            "hybrid_mode": "native_dense_sparse",
-            "hybrid_ranker": getattr(vector_store, "hybrid_ranker", "RRFRanker"),
-            "rrf_k": int((getattr(vector_store, "hybrid_ranker_params", {}) or {}).get("k", self.rrf_k)),
+            "hybrid_mode": "native_dense_sparse" if use_sparse else "dense_only",
+            "hybrid_ranker": getattr(vector_store, "hybrid_ranker", "RRFRanker") if use_sparse else "none",
+            "rrf_k": int((getattr(vector_store, "hybrid_ranker_params", {}) or {}).get("k", self.rrf_k)) if use_sparse else None,
             "candidate_k": self.candidate_k,
+            "elapsed_ms": round(elapsed_ms, 2),
         }
         return filtered[: self.top_k]
 
-    def _ensure_sparse_vector_store(self) -> Any:
+    def _get_vector_store(self) -> Any:
         """
-        确保向量存储支持稀疏向量
+        获取向量存储
         Returns:
             向量存储对象
         """
         vector_store = getattr(self.vector_index, "vector_store", None) or getattr(self.vector_index, "_vector_store", None)
         if vector_store is None:
             raise HybridRetrieverUnavailable("Milvus vector store 未初始化")
-        if not bool(getattr(vector_store, "enable_sparse", False)):
-            raise HybridRetrieverUnavailable("Milvus collection 缺少 sparse vector schema")
         return vector_store
 
 

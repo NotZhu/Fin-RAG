@@ -83,9 +83,12 @@ p {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  height: 100vh;
   min-width: 0;
-  overflow: hidden;
+  overflow: hidden auto;
   padding: 14px 10px;
+  position: sticky;
+  top: 0;
   transition: padding 0.2s ease;
 }
 
@@ -126,8 +129,10 @@ p {
 
 .kb-switcher {
   justify-self: center;
+  max-width: var(--kb-switch-width);
   min-width: 0;
   position: relative;
+  width: var(--kb-switch-width);
 }
 
 .kb-switch-button {
@@ -142,6 +147,7 @@ p {
   grid-template-columns: 16px minmax(0, 1fr) 16px;
   height: var(--kb-switch-height);
   justify-content: center;
+  max-width: var(--kb-switch-width);
   width: var(--kb-switch-width);
   padding: 0 6px;
   transition:
@@ -169,7 +175,9 @@ p {
 
 .kb-switch-button span {
   grid-column: 2;
-  justify-self: start;
+  justify-self: center;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   padding-left: 1px;
   text-overflow: ellipsis;
@@ -332,6 +340,12 @@ p {
   border-color: var(--primary);
 }
 
+.drop-zone.has-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: stretch;
+}
+
 .drop-zone svg {
   color: var(--text);
   flex: 0 0 auto;
@@ -354,8 +368,10 @@ p {
 
 .drop-zone span {
   color: var(--muted);
+  flex: 0 0 auto;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .timeline-panel {
@@ -381,6 +397,7 @@ p {
   border-radius: 12px;
   flex: 1;
   min-height: 0;
+  overflow: auto;
   padding: 8px;
 }
 
@@ -398,25 +415,12 @@ p {
   border-radius: 12px;
   display: grid;
   gap: 8px;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  padding: 10px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 9px 10px;
 }
 
 .timeline-item:hover {
   background: var(--hover);
-}
-
-.step-number {
-  align-items: center;
-  background: var(--hover);
-  border-radius: 999px;
-  color: var(--text);
-  display: inline-flex;
-  font-size: 11px;
-  font-weight: 750;
-  height: 22px;
-  justify-content: center;
-  width: 22px;
 }
 
 .step-body {
@@ -446,19 +450,29 @@ p {
   white-space: nowrap;
 }
 
-.step-body span {
+.step-detail {
   color: var(--muted);
   display: block;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.42;
   margin-top: 3px;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .step-status {
   align-items: center;
   display: flex;
+  gap: 4px;
+  justify-content: flex-end;
   min-height: 22px;
+  white-space: nowrap;
+}
+
+.step-state-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .step-duration {
@@ -890,9 +904,10 @@ p {
 .kb-stat-kb-name {
   align-items: center;
   display: inline-flex;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 650;
   gap: 4px;
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -904,11 +919,7 @@ p {
   display: flex;
   font-size: 14px;
   gap: 6px;
-}
-
-.kb-stat-item:last-of-type {
-  margin-left: 4px;
-  margin-top: 3px;
+  line-height: 1;
 }
 
 .kb-stat-label {
@@ -1080,6 +1091,10 @@ p {
   padding: 30px clamp(20px, 8vw, 160px);
 }
 
+.chat-panel:not(.is-empty) .chat-scroll {
+  padding-bottom: 130px;
+}
+
 .chat-panel.is-empty .chat-scroll {
   justify-content: center;
   padding-bottom: 48px;
@@ -1126,7 +1141,17 @@ p {
 }
 
 .chat-composer-form.is-docked {
+  position: fixed;
+  bottom: 0;
+  left: 320px;
+  right: 0;
+  z-index: 60;
+  background: var(--surface);
   margin-top: auto;
+}
+
+.app-layout.sidebar-collapsed .chat-composer-form.is-docked {
+  left: 64px;
 }
 
 .message-row {
@@ -1364,7 +1389,7 @@ p {
   position: fixed;
   right: 0;
   top: 0;
-  z-index: 20;
+  z-index: 1000;
 }
 
 .upload-confirm-dialog {
@@ -1410,22 +1435,34 @@ p {
 .upload-summary-row {
   align-items: center;
   display: grid;
-  gap: 10px 14px;
-  grid-template-columns: 44px minmax(0, 1fr) 36px auto;
+  column-gap: 28px;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
 }
 
-.upload-summary-row > span {
+.upload-summary-item {
+  align-items: baseline;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.upload-summary-item > span {
   color: var(--muted);
+  flex: 0 0 auto;
   font-size: 12px;
   font-weight: 700;
 }
 
-.upload-summary-row strong {
+.upload-summary-item strong {
   color: var(--text);
   font-size: 13px;
   font-weight: 650;
   overflow-wrap: anywhere;
+}
+
+.upload-summary-size-item {
+  flex: 0 0 auto;
 }
 
 .upload-summary-size {
@@ -1493,7 +1530,9 @@ p {
   .left-rail {
     border-bottom: 1px solid var(--border);
     border-right: 0;
+    height: auto;
     min-height: auto;
+    position: static;
   }
 
   .left-rail.is-collapsed {
@@ -1502,6 +1541,11 @@ p {
 
   .chat-panel {
     min-height: calc(100vh - 72px);
+  }
+
+  .chat-composer-form.is-docked,
+  .app-layout.sidebar-collapsed .chat-composer-form.is-docked {
+    left: 0;
   }
 }
 
@@ -1512,6 +1556,10 @@ p {
 
   .chat-scroll {
     padding: 24px 18px;
+  }
+
+  .chat-panel:not(.is-empty) .chat-scroll {
+    padding-bottom: 116px;
   }
 
   .chat-panel.is-empty .chat-scroll {

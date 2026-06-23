@@ -29,6 +29,8 @@ DOC_ID_FIELD = "document_id" # 文档 ID 元数据字段名
 DENSE_EMBEDDING_FIELD = "dense_embedding" # Dense embedding 向量字段名
 TEXT_FIELD = "text" # 节点文本字段名
 SPARSE_EMBEDDING_FIELD = "sparse_embedding" # Sparse embedding 向量字段名
+LLAMA_NODE_CONTENT_FIELD = "_node_content" # 节点序列化内容字段名
+LLAMA_NODE_TYPE_FIELD = "_node_type" # 节点类型字段名
 SCALAR_FIELD_NAMES = [ # 写入 Milvus 的标量元数据字段
     "chunk_id",
     "document_id",
@@ -55,6 +57,12 @@ SCALAR_FIELD_TYPE_NAMES = [ # 标量元数据字段对应的 Milvus 类型
 ]
 MILVUS_AUTO_FIELD_NAMES = {DOC_ID_FIELD} # Milvus 自动维护或不可直接写入的字段
 MILVUS_DYNAMIC_METADATA_FIELD_NAMES = {"page_number"} # 允许作为动态 metadata 写入的字段
+MILVUS_OUTPUT_FIELD_NAMES = [ # Milvus 查询结果需要返回的字段
+    *SCALAR_FIELD_NAMES,
+    LLAMA_NODE_CONTENT_FIELD,
+    LLAMA_NODE_TYPE_FIELD,
+    TEXT_FIELD,
+]
 MANIFEST_COMPARE_KEYS = [ # 判断现有索引是否可复用时参与比较的 manifest 字段
     "schema_version",
     "index_type",
@@ -256,9 +264,7 @@ class IndexConstructionModule:
         index_ids: list[str] | None = None,
         document_count: int = 0,
         node_count: int = 0,
-        summary_document_count: int = 0,
         last_persist_ms: float = 0.0,
-        summary_rebuild_llm_calls_estimate: int = 0,
     ) -> Dict[str, Any]:
         """构建当前索引配置清单"""
         leaf_chunk_size = int(chunk_size)
@@ -289,9 +295,7 @@ class IndexConstructionModule:
             },
             "document_count": int(document_count),
             "node_count": int(node_count),
-            "summary_document_count": int(summary_document_count),
             "last_persist_ms": round(float(last_persist_ms), 2),
-            "summary_rebuild_llm_calls_estimate": int(summary_rebuild_llm_calls_estimate),
         }
         return manifest
 
@@ -512,7 +516,7 @@ class IndexConstructionModule:
             "hybrid_ranker_params": {"k": self.rrf_k}, # RRF 混合排名参数
             "scalar_field_names": [field_name for field_name, _ in scalar_fields], # scalar 字段名列表
             "scalar_field_types": [field_type for _, field_type in scalar_fields], # scalar 字段类型列表
-            "output_fields": list(SCALAR_FIELD_NAMES), # 搜索结果中返回的字段列表
+            "output_fields": list(MILVUS_OUTPUT_FIELD_NAMES), # 搜索结果中返回的字段列表
         }
         # 加载 Milvus 向量存储类 MilvusVectorStore
         vector_store_cls = _load_milvus_vector_store_class()

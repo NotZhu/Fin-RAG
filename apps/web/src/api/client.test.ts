@@ -50,7 +50,6 @@ describe("askQuestionStream", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       streamResponse([
         'event: analysis\ndata: {"route_type":"knowledge"}\n\n',
-        'event: pipeline_step\ndata: {"id":"hybrid_search","order":3,"label":"Milvus Hybrid Search","detail":"dense+sparse · candidate_k 10","status":"complete","duration_ms":24,"meta":{}}\n\n',
         'event: token\ndata: {"text":"客户风险"}\n\n',
         'event: token\ndata: {"text":"等级匹配。[1]"}\n\n',
         'event: done\ndata: {"response":{"question":"q","route_type":"knowledge","retrieval_strategy":"llamaindex_router","answer":"客户风险等级匹配。[1]","sources":[]}}\n\n'
@@ -63,7 +62,7 @@ describe("askQuestionStream", () => {
       }
     });
 
-    expect(events).toEqual(["analysis", "pipeline_step", "token", "token", "done"]);
+    expect(events).toEqual(["analysis", "token", "token", "done"]);
     expect(result.payload.answer).toBe("客户风险等级匹配。[1]");
     expect(result.requestId).toBe("req-stream");
     expect(result.processTime).toBe("45.67");

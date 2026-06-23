@@ -25,7 +25,7 @@ def test_finrag_response_serializes_sources_and_trace():
                 "id": "hybrid_search",
                 "order": 3,
                 "label": "Milvus Hybrid Search",
-                "detail": "dense+sparse · candidate_k 10",
+                "detail": "Milvus 混合检索",
                 "status": "complete",
                 "duration_ms": 3.0,
                 "meta": {},

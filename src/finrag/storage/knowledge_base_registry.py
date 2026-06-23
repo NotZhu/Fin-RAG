@@ -208,6 +208,23 @@ class PostgreSQLKnowledgeBaseRegistry:
             )
         return self.get(knowledge_base_id)
 
+    def touch(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
+        """刷新知识库更新时间"""
+        knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
+        self.get(knowledge_base_id)
+        now = utc_now_iso()
+        with self.db.connect() as conn:
+            execute(
+                conn,
+                """
+                UPDATE finrag_knowledge_bases
+                SET updated_at = %s
+                WHERE knowledge_base_id = %s
+                """,
+                (now, knowledge_base_id),
+            )
+        return self.get(knowledge_base_id)
+
     def mark_deleted(self, knowledge_base_id: str) -> KnowledgeBaseRecord:
         """将知识库标记为已删除"""
         knowledge_base_id = validate_knowledge_base_id(knowledge_base_id)
