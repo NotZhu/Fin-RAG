@@ -729,8 +729,6 @@ class FinRAGSystem:
             if str((node.metadata or {}).get("knowledge_base_id") or "") == knowledge_base_id
         ]
         return self.index_module.build_manifest(
-            chunk_size=self.config.chunk_size,
-            chunk_overlap=self.config.chunk_overlap,
             knowledge_base_id=knowledge_base_id,
             llamaindex_index_store_dir=self.config.llamaindex_index_store_dir, # LlamaIndex 索引存储目录
             index_ids=["finrag-auto-merge"], # 索引 ID 列表
@@ -828,8 +826,6 @@ class FinRAGSystem:
         from finrag.indexing.nodes import build_ingestion_pipeline
 
         self.index_module.init_collection(reset=True)
-        # 是否使用语义分块
-        use_semantic = getattr(self.config, "use_semantic_chunking", False)
         # 获取嵌入模型
         embed_model = getattr(self.index_module, "embed_model", None)
         if embed_model is None:
@@ -839,7 +835,6 @@ class FinRAGSystem:
         pipeline = build_ingestion_pipeline(
             self.data_module,
             embed_model,
-            use_semantic_chunking=use_semantic,
         )
         # 运行 IngestionPipeline，获取所有节点
         all_nodes = list(pipeline.run(documents=self.data_module.documents, show_progress=True))

@@ -516,9 +516,29 @@ describe("FinRAG chat interface", () => {
 
     await screen.findByText("文档就绪，随时提问");
 
-    expect(screen.getByLabelText("上传文件")).toHaveAttribute(
-      "accept",
-      ".pdf,.docx,.md,.txt",
+    const acceptSuffixes = screen
+      .getByLabelText("上传文件")
+      .getAttribute("accept")
+      ?.split(",");
+
+    expect(new Set(acceptSuffixes)).toEqual(
+      new Set([
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".csv",
+        ".md",
+        ".txt",
+        ".html",
+        ".htm",
+        ".json",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".tif",
+        ".tiff",
+      ]),
     );
   });
 

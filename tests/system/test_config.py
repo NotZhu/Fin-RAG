@@ -11,8 +11,8 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert Path(config.data_path).is_absolute()
     assert Path(config.data_path) == PROJECT_ROOT / "data" / "documents"
     assert config.knowledge_base_id == "finance"
-    assert config.chunk_size == 300
-    assert config.chunk_overlap == 60
+    assert not hasattr(config, "chunk_size")
+    assert not hasattr(config, "chunk_overlap")
     assert config.reranker_provider == "none"
     assert config.reranker_model == "jina-reranker-v2-base-multilingual"
     assert config.reranker_endpoint == ""
@@ -22,7 +22,6 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert config.auto_merge_ratio_threshold == 0.5
     assert config.context_token_budget == 2400
     assert config.neighbor_window == 1
-    assert config.use_semantic_chunking is False
     assert Path(config.upload_dir) == PROJECT_ROOT / "storage" / "uploads"
     assert config.max_upload_bytes == 20 * 1024 * 1024
     assert not hasattr(config, "ocr_enabled")
@@ -42,11 +41,17 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert not hasattr(config, "auto_merge_l1_threshold")
     assert not hasattr(config, "auto_merge_l2_threshold")
     assert not hasattr(config, "evidence_token_budget")
+    assert not hasattr(config, "use_semantic_chunking")
 
 
 def test_config_rejects_removed_local_storage_kwargs():
     with pytest.raises(TypeError, match="未知 RAGConfig 字段"):
         RAGConfig(index_save_path="storage/index_manifest")
+
+
+def test_config_rejects_removed_chunking_kwargs():
+    with pytest.raises(TypeError, match="chunk_size"):
+        RAGConfig(chunk_size=300)
 
 
 def test_config_can_be_created_from_environment(monkeypatch):
@@ -55,8 +60,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     monkeypatch.setenv("RAG_TOP_K", "5")
     monkeypatch.setenv("RAG_RETRIEVAL_CANDIDATE_K", "12")
     monkeypatch.setenv("RAG_RRF_K", "42")
-    monkeypatch.setenv("RAG_CHUNK_SIZE", "300")
-    monkeypatch.setenv("RAG_CHUNK_OVERLAP", "60")
+    monkeypatch.setenv("RAG_CHUNK_SIZE", "999")
+    monkeypatch.setenv("RAG_CHUNK_OVERLAP", "99")
     monkeypatch.setenv("RAG_RERANKER_PROVIDER", "jina")
     monkeypatch.setenv("RAG_RERANKER_MODEL", "jina-reranker-v2-base-multilingual")
     monkeypatch.setenv("RAG_RERANKER_ENDPOINT", "https://api.jina.ai/v1/rerank")
@@ -67,7 +72,6 @@ def test_config_can_be_created_from_environment(monkeypatch):
     monkeypatch.setenv("RAG_AUTO_MERGE_RATIO_THRESHOLD", "0.75")
     monkeypatch.setenv("RAG_CONTEXT_TOKEN_BUDGET", "1800")
     monkeypatch.setenv("RAG_NEIGHBOR_WINDOW", "2")
-    monkeypatch.setenv("RAG_USE_SEMANTIC_CHUNKING", "true")
     monkeypatch.setenv("RAG_UPLOAD_DIR", "tmp_uploads")
     monkeypatch.setenv("RAG_MAX_UPLOAD_BYTES", "4096")
 
@@ -78,8 +82,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert config.top_k == 5
     assert config.retrieval_candidate_k == 12
     assert config.rrf_k == 42
-    assert config.chunk_size == 300
-    assert config.chunk_overlap == 60
+    assert not hasattr(config, "chunk_size")
+    assert not hasattr(config, "chunk_overlap")
     assert config.reranker_provider == "jina"
     assert config.reranker_model == "jina-reranker-v2-base-multilingual"
     assert config.reranker_endpoint == "https://api.jina.ai/v1/rerank"
@@ -90,7 +94,6 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert config.auto_merge_ratio_threshold == 0.75
     assert config.context_token_budget == 1800
     assert config.neighbor_window == 2
-    assert config.use_semantic_chunking is True
     assert Path(config.upload_dir) == PROJECT_ROOT / "tmp_uploads"
     assert config.max_upload_bytes == 4096
     assert not hasattr(config, "ocr_enabled")
@@ -143,7 +146,9 @@ def test_service_stack_config_is_postgres_redis_milvus_only(monkeypatch):
     assert "vector_backend" not in config.to_dict()
     assert "hybrid_enabled" not in config.to_dict()
     assert "ask_streaming" not in config.to_dict()
-    assert "use_semantic_chunking" in config.to_dict()
+    assert "use_semantic_chunking" not in config.to_dict()
+    assert "chunk_size" not in config.to_dict()
+    assert "chunk_overlap" not in config.to_dict()
     assert "neighbor_window" in config.to_dict()
 
 
@@ -167,8 +172,6 @@ def test_env_example_documents_postgres_redis_milvus_stack():
         "RAG_MILVUS_HOST",
         "RAG_MILVUS_PORT",
         "RAG_MILVUS_COLLECTION",
-        "RAG_CHUNK_SIZE",
-        "RAG_CHUNK_OVERLAP",
         "RAG_RERANKER_ENDPOINT",
         "RAG_RERANKER_API_KEY",
         "RAG_RETRIEVAL_STRATEGY",
@@ -176,7 +179,6 @@ def test_env_example_documents_postgres_redis_milvus_stack():
         "RAG_AUTO_MERGE_RATIO_THRESHOLD",
         "RAG_CONTEXT_TOKEN_BUDGET",
         "RAG_NEIGHBOR_WINDOW",
-        "RAG_USE_SEMANTIC_CHUNKING",
         "RAG_UPLOAD_DIR",
         "RAG_MAX_UPLOAD_BYTES",
     ]:
@@ -193,3 +195,6 @@ def test_env_example_documents_postgres_redis_milvus_stack():
     assert "RAG_AUTO_MERGE_L1_THRESHOLD=" not in env_example
     assert "RAG_AUTO_MERGE_L2_THRESHOLD=" not in env_example
     assert "RAG_EVIDENCE_TOKEN_BUDGET=" not in env_example
+    assert "RAG_USE_SEMANTIC_CHUNKING=" not in env_example
+    assert "RAG_CHUNK_SIZE=" not in env_example
+    assert "RAG_CHUNK_OVERLAP=" not in env_example

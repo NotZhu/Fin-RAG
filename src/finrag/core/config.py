@@ -64,8 +64,6 @@ class RAGConfig:
     rrf_k: int = 60 # 倒数排名融合参数
     retrieval_strategy: str = "llamaindex_router" # 查询编排策略
     llamaindex_index_store_dir: str = field(default_factory=lambda: str(PROJECT_ROOT / "storage" / "llamaindex")) # LlamaIndex index metadata 本地目录
-    chunk_size: int = 300 # 文档切分块大小
-    chunk_overlap: int = 60 # 文档切分块重叠大小
     score_threshold: float = 0.0 # 检索候选分数阈值，低于该分数的候选将被过滤
     reranker_provider: str = "none" # 是否启用重排序模型
     reranker_model: str = "jina-reranker-v2-base-multilingual" # 重排序模型名称
@@ -75,7 +73,6 @@ class RAGConfig:
     auto_merge_ratio_threshold: float = 0.5 # 自动合并检索器阈值
     context_token_budget: int = 2400 # 上下文 token 硬预算
     neighbor_window: int = 1 # 前后相邻节点扩展数量
-    use_semantic_chunking: bool = False # 是否启用语义切分
     max_upload_bytes: int = 20 * 1024 * 1024 # 单个上传文件最大字节数
 
     # 生成配置
@@ -126,8 +123,6 @@ class RAGConfig:
         self.rrf_k = int(self.rrf_k)
         self.retrieval_strategy = str(self.retrieval_strategy).strip() or "llamaindex_router"
         self.llamaindex_index_store_dir = resolve_project_path(self.llamaindex_index_store_dir)
-        self.chunk_size = int(self.chunk_size)
-        self.chunk_overlap = int(self.chunk_overlap)
         self.score_threshold = float(self.score_threshold)
         self.reranker_provider = str(self.reranker_provider).strip().lower()
         self.reranker_model = str(self.reranker_model).strip()
@@ -137,24 +132,10 @@ class RAGConfig:
         self.auto_merge_ratio_threshold = float(self.auto_merge_ratio_threshold)
         self.context_token_budget = int(self.context_token_budget)
         self.neighbor_window = max(int(self.neighbor_window), 0)
-        self.use_semantic_chunking = self._to_bool(self.use_semantic_chunking)
         self.max_upload_bytes = int(self.max_upload_bytes)
         self.temperature = float(self.temperature)
         self.max_tokens = int(self.max_tokens)
 
-    @staticmethod
-    def _to_bool(value) -> bool:
-        """
-        将环境变量中的字符串形式转换为布尔值
-        Args:
-            value: bool 或字符串配置值
-        Returns:
-            解析后的布尔值
-        """
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-    
     @classmethod
     def from_env(cls) -> 'RAGConfig': # 当前类  
         """
@@ -179,8 +160,6 @@ class RAGConfig:
             "rrf_k": "RAG_RRF_K", # RRF 策略参数
             "retrieval_strategy": "RAG_RETRIEVAL_STRATEGY", # 检索策略
             "llamaindex_index_store_dir": "RAG_LLAMAINDEX_INDEX_STORE_DIR", # LlamaIndex 索引存储目录
-            "chunk_size": "RAG_CHUNK_SIZE", # 分块大小
-            "chunk_overlap": "RAG_CHUNK_OVERLAP", # 分块重叠
             "score_threshold": "RAG_SCORE_THRESHOLD", # 分数阈值
             "reranker_provider": "RAG_RERANKER_PROVIDER", # 重排序器提供程序
             "reranker_model": "RAG_RERANKER_MODEL", # 重排序器模型
@@ -190,7 +169,6 @@ class RAGConfig:
             "auto_merge_ratio_threshold": "RAG_AUTO_MERGE_RATIO_THRESHOLD", # 自动合并阈值
             "context_token_budget": "RAG_CONTEXT_TOKEN_BUDGET", # 上下文令牌预算
             "neighbor_window": "RAG_NEIGHBOR_WINDOW", # 前后相邻节点扩展数量
-            "use_semantic_chunking": "RAG_USE_SEMANTIC_CHUNKING", # 是否启用语义分块
             "max_upload_bytes": "RAG_MAX_UPLOAD_BYTES",  # 最大上传文件大小（字节）
             "temperature": "RAG_TEMPERATURE", # 温度参数
             "max_tokens": "RAG_MAX_TOKENS", # 最大令牌数
@@ -225,8 +203,6 @@ class RAGConfig:
             'rrf_k': self.rrf_k,
             'retrieval_strategy': self.retrieval_strategy,
             'llamaindex_index_store_dir': self.llamaindex_index_store_dir,
-            'chunk_size': self.chunk_size,
-            'chunk_overlap': self.chunk_overlap,
             'score_threshold': self.score_threshold,
             'reranker_provider': self.reranker_provider,
             'reranker_model': self.reranker_model,
@@ -236,7 +212,6 @@ class RAGConfig:
             'auto_merge_ratio_threshold': self.auto_merge_ratio_threshold,
             'context_token_budget': self.context_token_budget,
             'neighbor_window': self.neighbor_window,
-            'use_semantic_chunking': self.use_semantic_chunking,
             'max_upload_bytes': self.max_upload_bytes,
             'temperature': self.temperature,
             'max_tokens': self.max_tokens

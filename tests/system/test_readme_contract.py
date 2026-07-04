@@ -26,9 +26,8 @@ def test_readme_is_github_style_and_current_state_only():
     assert "uvicorn finrag.api:app --host 127.0.0.1 --port 8000" in readme
     assert "python -m scripts.evaluate_retrieval --json" in readme
     assert "python -m scripts.evaluate_ragas datasets/eval/finance_ragas_eval_set.jsonl --json" in readme
-    assert "chunk_sizes=[1200, 600, 300]" in readme
-    assert "RAG_CHUNK_SIZE=300" in readme
-    assert "RAG_CHUNK_OVERLAP=60" in readme
+    assert "`DoclingNodeParser`" in readme
+    assert "`HierarchyBuilder`" in readme
     assert "none / jina" in readme
     assert "LlamaIndex `AutoMergingRetriever`" not in readme
     ask_request = readme.split("### Ask Request", 1)[1].split("### Ask Response", 1)[0]

@@ -139,22 +139,24 @@ def test_index_module_rejects_removed_local_vector_paths(monkeypatch):
         )
 
 
-def test_manifest_changes_when_hierarchical_chunking_config_changes(tmp_path):
+def test_manifest_records_docling_node_structure_and_rejects_legacy_chunking_config(tmp_path):
     module = IndexConstructionModule(
         model_name="text-embedding-v4",
         embed_model=EmbeddingDimensionProbe(1024),
     )
 
-    baseline = module.build_manifest(chunk_size=300, chunk_overlap=60)
-    changed_size = module.build_manifest(chunk_size=600, chunk_overlap=60)
-    changed_overlap = module.build_manifest(chunk_size=300, chunk_overlap=30)
+    manifest = module.build_manifest()
 
-    assert baseline["schema_version"] == MANIFEST_SCHEMA_VERSION
-    assert baseline["index_type"] == INDEX_TYPE
-    assert baseline["chunking"]["chunk_sizes"] == [1200, 600, 300]
-    assert baseline["chunking"]["chunk_overlap"] == 60
-    assert baseline["chunking"] != changed_size["chunking"]
-    assert baseline["chunking"] != changed_overlap["chunking"]
+    assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert manifest["index_type"] == INDEX_TYPE
+    assert manifest["node_structure"] == {
+        "parser": "docling_node_parser",
+        "hierarchy": ["document", "section", "leaf"],
+        "indexed_levels": ["leaf"],
+    }
+    assert "chunking" not in manifest
+    with pytest.raises(TypeError, match="chunk_size"):
+        module.build_manifest(chunk_size=300)
 
 
 def test_manifest_records_actual_embedding_dimension_for_injected_model(tmp_path):

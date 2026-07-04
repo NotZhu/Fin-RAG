@@ -2,14 +2,15 @@
 
 from finrag.storage import PostgreSQLDocumentRegistry
 
-from .parsers import DocumentRecord, ParserRegistry, compute_content_hash, is_path_within, load_documents, normalize_text
+from .docling_loader import load_docling_documents
+from .parsers import DocumentRecord, compute_content_hash, is_path_within, load_documents, normalize_text
 
 __all__ = [
     "DocumentRecord",
-    "ParserRegistry",
     "PostgreSQLDocumentRegistry",
     "compute_content_hash",
     "is_path_within",
+    "load_docling_documents",
     "load_documents",
     "normalize_text",
 ]

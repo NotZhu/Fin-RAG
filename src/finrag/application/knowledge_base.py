@@ -52,8 +52,6 @@ class KnowledgeBaseService:
         data_module = DataPreparationModule(
             system.config.data_path, # 数据路径
             knowledge_base_id=scope.knowledge_base_id, # 知识库 ID
-            chunk_size=system.config.chunk_size, # 分块大小
-            chunk_overlap=system.config.chunk_overlap, # 分块重叠
             document_registry=system.document_registry, # 文档注册表
             docstore=getattr(system, "llama_docstore", None), # 可选 LlamaIndex docstore adapter
         )
@@ -70,12 +68,6 @@ class KnowledgeBaseService:
             ) if system.bm25_store is not None else None, # 可选的 BM25 稀疏嵌入函数
             rrf_k=system.config.rrf_k, # RRF 算法参数
         )
-        # 如果启用了语义分块，配置嵌入模型
-        if getattr(system.config, "use_semantic_chunking", False):
-            data_module._use_semantic_chunking = True # 启用语义分块
-            embed_model = getattr(index_module, "embed_model", None)
-            if embed_model is not None:
-                data_module._embed_model = embed_model # 配置嵌入模型
         # 初始化生成模块
         generation_module = GenerationIntegrationModule(
             model_name=system.config.llm_model, # LLM 模型名称

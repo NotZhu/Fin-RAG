@@ -20,9 +20,14 @@ from finrag.storage.protocols import SparseVector
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_SCHEMA_VERSION = 1 # 当前索引 manifest schema 版本
+MANIFEST_SCHEMA_VERSION = 2 # 当前索引 manifest schema 版本
 INDEX_TYPE = "LlamaIndexRouter" # 当前索引类型标识
 MILVUS_COLLECTION_NAME = "finrag_leaf_nodes" # 默认 Milvus collection 名称
+DOCLING_NODE_STRUCTURE = {
+    "parser": "docling_node_parser",
+    "hierarchy": ["document", "section", "leaf"],
+    "indexed_levels": ["leaf"],
+}
 
 PRIMARY_ID_FIELD = "id" # Milvus 主键字段名
 DOC_ID_FIELD = "document_id" # 文档 ID 元数据字段名
@@ -69,7 +74,7 @@ MANIFEST_COMPARE_KEYS = [ # 判断现有索引是否可复用时参与比较的 
     "knowledge_base_id",
     "embedding",
     "milvus",
-    "chunking",
+    "node_structure",
 ]
 DENSE_INDEX_CONFIG = { # Dense 向量索引配置
     "index_type": "HNSW", # 使用 HNSW 索引类型
@@ -256,8 +261,6 @@ class IndexConstructionModule:
 
     def build_manifest(
         self,
-        chunk_size: int = 300,
-        chunk_overlap: int = 60,
         *,
         knowledge_base_id: str = "",
         llamaindex_index_store_dir: str = "",
@@ -267,8 +270,6 @@ class IndexConstructionModule:
         last_persist_ms: float = 0.0,
     ) -> Dict[str, Any]:
         """构建当前索引配置清单"""
-        leaf_chunk_size = int(chunk_size)
-        overlap = int(chunk_overlap)
         manifest: Dict[str, Any] = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "index_type": INDEX_TYPE,
@@ -288,11 +289,7 @@ class IndexConstructionModule:
                 "sparse_index": dict(SPARSE_INDEX_CONFIG) if self.sparse_embedding_function is not None else None,
                 "rrf_k": self.rrf_k,
             },
-            "chunking": {
-                "chunk_sizes": [leaf_chunk_size * 4, leaf_chunk_size * 2, leaf_chunk_size],
-                "chunk_overlap": overlap,
-                "leaf_only_index": True,
-            },
+            "node_structure": dict(DOCLING_NODE_STRUCTURE),
             "document_count": int(document_count),
             "node_count": int(node_count),
             "last_persist_ms": round(float(last_persist_ms), 2),

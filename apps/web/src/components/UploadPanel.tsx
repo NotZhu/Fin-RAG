@@ -18,6 +18,24 @@ type UploadPanelProps = {
   onUpload: () => void;
 };
 
+const SUPPORTED_UPLOAD_SUFFIXES = [
+  ".pdf",
+  ".docx",
+  ".pptx",
+  ".xlsx",
+  ".csv",
+  ".md",
+  ".txt",
+  ".html",
+  ".htm",
+  ".json",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".tif",
+  ".tiff",
+] as const;
+
 export function UploadPanel({
   collapsed,
   selectedFile,
@@ -113,7 +131,7 @@ export function UploadPanel({
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
-        accept=".pdf,.docx,.md,.txt"
+        accept={SUPPORTED_UPLOAD_SUFFIXES.join(",")}
         aria-label="上传文件"
         onChange={(event) =>
           handleSelectedFile(event.target.files?.[0] ?? null)

@@ -210,8 +210,6 @@ def test_knowledge_base_initialization_always_passes_document_registry(monkeypat
         config=SimpleNamespace(
             data_path=str(tmp_path),
             knowledge_base_id="kb-finance",
-            chunk_size=300,
-            chunk_overlap=60,
             embedding_model="text-embedding-v4",
             milvus_collection="collection",
             milvus_host="localhost",
@@ -264,8 +262,6 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
     config = SimpleNamespace(
         data_path=str(tmp_path),
         knowledge_base_id="finance",
-        chunk_size=300,
-        chunk_overlap=60,
         embedding_model="text-embedding-v4",
         milvus_collection="finrag_leaf_nodes",
         milvus_host="localhost",
@@ -403,7 +399,7 @@ def test_rebuild_via_pipeline_propagates_pipeline_errors(monkeypatch):
     monkeypatch.setattr(nodes_module, "build_ingestion_pipeline", fail_build_ingestion_pipeline)
 
     system = FinRAGSystem.__new__(FinRAGSystem)
-    system.config = SimpleNamespace(use_semantic_chunking=False)
+    system.config = SimpleNamespace()
     system.llama_docstore = object()
     system.data_module = SimpleNamespace(
         documents=[object()],
@@ -477,7 +473,7 @@ def test_rebuild_via_pipeline_stores_hierarchy_nodes_and_indexes_only_leaf_nodes
     monkeypatch.setattr(nodes_module, "build_ingestion_pipeline", lambda *args, **kwargs: FakePipeline())
 
     system = FinRAGSystem.__new__(FinRAGSystem)
-    system.config = SimpleNamespace(use_semantic_chunking=False)
+    system.config = SimpleNamespace()
     system.llama_docstore = FakeDocstore()
     system.data_module = SimpleNamespace(
         documents=[object()],

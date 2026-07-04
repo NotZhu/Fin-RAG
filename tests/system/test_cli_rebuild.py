@@ -178,8 +178,8 @@ def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp
         def load_manifest(self, knowledge_base_id):
             return self.manifest
 
-        def build_manifest(self, *, chunk_size=300, chunk_overlap=60, **kwargs):
-            return {"schema_version": 9, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap}
+        def build_manifest(self, **kwargs):
+            return {"schema_version": 9, "node_structure": "docling", **kwargs}
 
     class FakePipeline:
         def run(self, *, documents, show_progress=False):
@@ -263,8 +263,8 @@ def test_rebuild_marks_source_documents_parsing_and_touches_knowledge_base(monke
         def load_manifest(self, knowledge_base_id):
             return self.manifest
 
-        def build_manifest(self, *, chunk_size=300, chunk_overlap=60, **kwargs):
-            return {"schema_version": 9, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap}
+        def build_manifest(self, **kwargs):
+            return {"schema_version": 9, "node_structure": "docling", **kwargs}
 
     class RecordingDataModule:
         def __init__(self):

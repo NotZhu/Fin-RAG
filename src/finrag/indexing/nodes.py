@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from llama_index.core import Document, StorageContext
 from llama_index.core.bridge.pydantic import PrivateAttr
-from llama_index.core.node_parser import HierarchicalNodeParser, get_leaf_nodes
+from llama_index.core.node_parser import get_leaf_nodes
 from llama_index.core.schema import BaseNode, NodeRelationship, RelatedNodeInfo, TransformComponent
 from finrag.core.node_schema import TextNode
-from finrag.ingestion.parsers import SUPPORTED_SUFFIXES, ParserRegistry, is_path_within, load_documents as load_financial_documents
+from finrag.ingestion.docling_loader import load_docling_documents
+from finrag.ingestion.parsers import SUPPORTED_SUFFIXES, is_path_within, load_documents as load_financial_documents
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,6 @@ class DataPreparationModule:
         data_path: str,
         *,
         knowledge_base_id: str = "default",
-        chunk_size: int = 300,
-        chunk_overlap: int = 60,
         document_registry: Any = None,
         docstore: Optional[Any] = None,
     ):
@@ -35,21 +34,16 @@ class DataPreparationModule:
         Args:
             data_path: 文档数据目录路径
             knowledge_base_id: 默认资料库 ID
-            chunk_size: 文档切分块大小
-            chunk_overlap: 文档切分块重叠大小
             document_registry: 可选文档注册表
             docstore: 可选 LlamaIndex docstore adapter（PostgreSQLLlamaIndexDocumentStore）
         """
-        self.data_path = data_path # 文档数据目录路径
-        self.knowledge_base_id = knowledge_base_id # 资料库 ID
-        self.chunk_size = int(chunk_size) # 文档切分块大小
-        self.chunk_overlap = int(chunk_overlap) # 文档切分块重叠大小
-        self.document_registry = document_registry # 文档注册表
-        self._docstore = docstore # 可选 LlamaIndex docstore adapter
-        self.documents: List[Document] = [] # 已加载的 Document 列表
-        self.all_nodes: List[TextNode] = [] # 构建的全部层级节点列表
-        self.chunks: List[TextNode] = [] # 仅用于检索的叶子节点列表
-        # 初始化 StorageContext 容器
+        self.data_path = data_path
+        self.knowledge_base_id = knowledge_base_id
+        self.document_registry = document_registry
+        self._docstore = docstore
+        self.documents: List[Document] = []
+        self.all_nodes: List[TextNode] = []
+        self.chunks: List[TextNode] = []
         self.storage_context: StorageContext = self._make_storage_context()
 
     def load_documents(self) -> List[Document]:
@@ -60,22 +54,18 @@ class DataPreparationModule:
         """
         logger.info("正在从 %s 加载金融资料文档...", self.data_path)
         self.documents = load_financial_documents(
-            self.data_path, # 文档数据目录路径
-            knowledge_base_id=self.knowledge_base_id, # 资料库 ID
-            document_registry=self.document_registry, # 文档注册表
-            parser_registry=self._make_parser_registry(),
+            self.data_path,
+            knowledge_base_id=self.knowledge_base_id,
+            document_registry=self.document_registry,
         )
-        # 重置已加载状态
         self._reset_loaded_state()
         logger.info("成功加载 %s 个父文档", len(self.documents))
         return self.documents
 
     def _make_storage_context(self) -> StorageContext:
         """根据配置创建 StorageContext"""
-        # 如果提供了 docstore，创建一个定了 docstore 的 StorageContext
         if self._docstore is not None:
             return StorageContext.from_defaults(docstore=self._docstore)
-        # 如果没有提供 docstore，创建一个默认的 StorageContext
         return StorageContext.from_defaults()
 
     def _reset_loaded_state(self) -> None:
@@ -103,13 +93,13 @@ class DataPreparationModule:
             return []
         if path.suffix.lower() not in SUPPORTED_SUFFIXES:
             return []
-        # 加载文档内容
-        parsed_docs = self._make_parser_registry().load(
+        # 使用 Docling 统一解析注册文档内容
+        parsed_docs = load_docling_documents(
             path,
             knowledge_base_id=record.knowledge_base_id,
             data_root=source_root,
         )
-        # 更新文档元数据
+        # 使用注册表中的生命周期元数据覆盖解析器生成值
         for doc in parsed_docs:
             doc.metadata.update(
                 {
@@ -132,10 +122,6 @@ class DataPreparationModule:
         root = Path(self.data_path)
         return root if is_path_within(path, root) else None
 
-    def _make_parser_registry(self) -> ParserRegistry:
-        """创建数据解析注册表"""
-        return ParserRegistry.default()
-
     def chunk_single_document(self, record: Any) -> tuple[List[TextNode], List[TextNode]]:
         """
         只切分一个文档注册记录，返回全部层级节点和叶子节点
@@ -148,7 +134,6 @@ class DataPreparationModule:
         documents = self.load_record_documents(record)
         if not documents:
             return [], []
-        # 构建层级节点
         return self._build_hierarchical_nodes(documents)
 
     def load_prepared_nodes(self, all_nodes: List[TextNode]) -> List[TextNode]:
@@ -169,115 +154,65 @@ class DataPreparationModule:
         Returns:
             (all_nodes, leaf_nodes)
         """
-        # 检查是否使用语义分块器
-        use_semantic = getattr(self, "_use_semantic_chunking", False)
-        if use_semantic:
-            all_nodes = self._chunk_with_semantic_splitter(documents)
-        # 否则使用默认的层级分块器
-        else:
-            # 先抽取 Markdown 表格等结构化元素
-            source_nodes = self._extract_markdown_element_nodes(documents)
-            # 初始化层级分块器
-            parser = HierarchicalNodeParser.from_defaults(
-                chunk_sizes=[max(self.chunk_size * 4, self.chunk_size), max(self.chunk_size * 2, self.chunk_size), self.chunk_size],
-                chunk_overlap=self.chunk_overlap,
-                include_metadata=False, # 生成节点时，节点文本内容不包含文档元数据
-            )
-            all_nodes = [
-                node
-                for node in parser(source_nodes)
-                if isinstance(node, TextNode)
-            ]
-        # 为层级节点重写稳定 chunk_id，并补充父子层级和溯源元数据
-        self._assign_finrag_metadata(all_nodes)
-        # 返回全部层级节点和叶子节点
+        leaf_source_nodes = self._parse_docling_leaf_nodes(documents)
+        all_nodes = [node for node in HierarchyBuilder()(leaf_source_nodes) if isinstance(node, TextNode)]
+        if not all_nodes:
+            return [], []
+        self._assign_node_metadata(all_nodes)
         return all_nodes, get_leaf_nodes(all_nodes)
 
-    def _extract_markdown_element_nodes(self, documents: List[Document]) -> List[BaseNode]:
+    def _parse_docling_leaf_nodes(self, documents: List[Document]) -> List[TextNode]:
         """
-        先抽取 Markdown 表格等结构化元素，避免后续按字符长度切碎表格
+        使用 DoclingNodeParser 将 Docling JSON Document 转为叶子节点
         Args:
             documents: 待切分的 Document 列表
         Returns:
-            该文档解析得到的 LlamaIndex BaseNode 列表
+            DoclingNodeParser 生成的叶子节点列表
         """
-        try:
-            parser = LocalMarkdownElementNodeParser.create()
-            nodes = parser.get_nodes_from_documents(documents)
-        except Exception as exc:
-            logger.warning("Markdown 元素解析失败，回退为普通层级分块: %s", exc)
-            return list(documents)
-        return list(nodes) if nodes else list(documents)
-
-    def _chunk_with_semantic_splitter(self, documents: List[Document]) -> List[TextNode]:
-        """
-        使用语义分块器对文档进行分块，返回全部层级节点
-        Args:
-            documents: 待切分的 Document 列表
-        Returns:
-            该文档解析得到的 LlamaIndex TextNode 列表
-        """
-        from llama_index.core.node_parser import SemanticSplitterNodeParser
-        # 初始化语义分块器
-        parser = SemanticSplitterNodeParser.from_defaults(
-            embed_model=getattr(self, "_embed_model", None),
-            breakpoint_percentile_threshold=95, # 断点阈值，用于确定分块位置
-            buffer_size=1, # 语义比较时的上下文窗口大小
-        )
+        parser = _make_docling_node_parser()
         nodes: List[TextNode] = []
-        for doc in documents:
-            # 对每个文档进行分块
-            for node in parser.get_nodes_from_documents([doc]):
-                if isinstance(node, TextNode):
-                    nodes.append(node)
+        # 从所有文档中获取所有节点
+        for node in parser.get_nodes_from_documents(documents):
+            # 过滤出文本节点
+            if isinstance(node, TextNode):
+                nodes.append(node)
         return nodes
 
-    def _assign_finrag_metadata(self, all_nodes: List[TextNode]) -> None:
+    def _assign_node_metadata(self, all_nodes: List[TextNode]) -> None:
         """
         为层级节点重写稳定 chunk_id，并补充父子层级和溯源元数据
         Args:
-            all_nodes: HierarchicalNodeParser 生成的全部层级节点
+            all_nodes: 层级构造器生成的全部节点
         Returns:
             无返回值，直接修改节点 ID、relationships 和 metadata
         """
-        # 旧节点 ID 映射到新节点 ID
         old_to_new: Dict[str, str] = {}
-        # 旧节点 ID 映射到新节点层级
         level_by_old_id: Dict[str, int] = {}
-        # 每个文档每个层级的计数器
-        counters: Dict[tuple[str, int], int] = defaultdict(int) # 默认值为 0
+        counters: Dict[tuple[str, int], int] = defaultdict(int)
         for node in all_nodes:
             level = self._relationship_level(node)
             old_id = node.node_id
-            metadata = self._node_metadata(node) # 合并节点自身 metadata 与 SOURCE 关系中的文档 metadata
+            metadata = self._node_metadata(node)
             document_id = str(metadata.get("document_id") or "")
             chunk_idx = counters[(document_id, level)]
             counters[(document_id, level)] += 1
             old_to_new[old_id] = self._make_chunk_id(document_id, level, chunk_idx, node.text)
             level_by_old_id[old_id] = level
 
-        # 重写节点 ID
         for node in all_nodes:
             old_id = node.node_id
             node.node_id = old_to_new[old_id]
-        # 重写节点关系中的 node_id 引用
         for node in all_nodes:
             node.relationships = self._remap_relationships(node.relationships, old_to_new)
 
-        # 新节点 ID 映射回旧节点 ID，避免后续循环反复扫描 old_to_new
         new_to_old = {new_id: old_id for old_id, new_id in old_to_new.items()}
-        # 构建 node_id 到节点对象的映射
         nodes_by_id = {node.node_id: node for node in all_nodes}
-        # 构建 leaf chunk ID 到索引的映射
         leaf_chunk_idx = {node.node_id: index for index, node in enumerate(get_leaf_nodes(all_nodes))}
-        # 构建每个文档每个层级的索引计数器
         level_counters: Dict[tuple[str, int], int] = defaultdict(int)
         for node in all_nodes:
             metadata = self._node_metadata(node)
             document_id = str(metadata.get("document_id") or "")
-            # 从旧节点 ID 映射中获取旧层级
             old_level = level_by_old_id.get(new_to_old.get(node.node_id, ""), 3)
-            # 从节点关系中获取新层级，优先级高于旧层级
             level = self._relationship_level(node) or old_level
             parent_id = node.parent_node.node_id if node.parent_node else node.node_id
             root_id = self._root_node_id(node, nodes_by_id)
@@ -288,13 +223,13 @@ class DataPreparationModule:
                 level_counters[(document_id, level)] += 1
             metadata.update(
                 {
-                    "document_id": metadata.get("document_id", document_id), # 文档ID
+                    "document_id": metadata.get("document_id", document_id),
                     "knowledge_base_id": metadata.get("knowledge_base_id", self.knowledge_base_id),
-                    "chunk_id": node.node_id, # 节点ID
-                    "parent_chunk_id": parent_id, # 父节点ID
-                    "root_chunk_id": root_id, # 根节点ID
-                    "chunk_level": level, # 节点层级
-                    "chunk_idx": chunk_idx, # 同层级内的序号
+                    "chunk_id": node.node_id,
+                    "parent_chunk_id": parent_id,
+                    "root_chunk_id": root_id,
+                    "chunk_level": level,
+                    "chunk_idx": chunk_idx,
                 }
             )
             node.metadata = metadata
@@ -302,7 +237,7 @@ class DataPreparationModule:
     @staticmethod
     def _relationship_level(node: TextNode) -> int:
         """
-        根据节点关系判断 FinRAG 层级编号
+        根据节点关系判断层级编号
         Args:
             node: 待判断的 TextNode
         Returns:
@@ -330,7 +265,7 @@ class DataPreparationModule:
     @staticmethod
     def _remap_relationships(relationships: Dict[NodeRelationship, Any], old_to_new: Dict[str, str]) -> Dict[NodeRelationship, Any]:
         """
-        将 LlamaIndex 节点关系中的旧 node_id 替换为 FinRAG 稳定 chunk_id
+        将 LlamaIndex 节点关系中的旧 node_id 替换为稳定 chunk_id
         Args:
             relationships: 原始节点关系字典
             old_to_new: 旧 node_id 到新 chunk_id 的映射
@@ -413,9 +348,186 @@ class DataPreparationModule:
         }
 
 
-class FinRAGMetadataTransform(TransformComponent):
+class HierarchyBuilder(TransformComponent):
+    """根据 Docling 叶子节点构建文档/章节/叶子层级"""
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "hierarchy_builder"
+
+    def __call__(self, nodes: Sequence[BaseNode], **kwargs: Any) -> Sequence[BaseNode]:
+        """
+        将 Docling 叶子节点按文档和章节组织为三层结构
+        Args:
+            nodes: DoclingNodeParser 生成的叶子节点
+        Returns:
+            root、section 和 leaf 组成的节点列表
+        """
+        leaf_nodes = [node for node in nodes if isinstance(node, TextNode)]
+        if not leaf_nodes:
+            return []
+        return self.build(leaf_nodes)
+
+    def build(self, leaf_nodes: Sequence[TextNode]) -> List[TextNode]:
+        """
+        将叶子节点按文档和章节组织为三层结构
+        Args:
+            leaf_nodes: DoclingNodeParser 生成的叶子节点
+        Returns:
+            root、section 和 leaf 组成的节点列表
+        """
+        documents: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        for leaf in leaf_nodes:
+            raw_metadata = dict(leaf.metadata or {})
+            metadata = self._clean_metadata(raw_metadata)
+            section_title = self._section_title(raw_metadata)
+            metadata["section_title"] = section_title
+            page_number = self._page_number(raw_metadata)
+            if page_number is not None:
+                metadata["page_number"] = page_number
+            leaf.metadata = metadata
+            leaf.relationships = {
+                relationship: value
+                for relationship, value in leaf.relationships.items()
+                if relationship not in {NodeRelationship.PARENT, NodeRelationship.CHILD, NodeRelationship.SOURCE}
+            }
+
+            document_id = str(metadata.get("document_id") or "")
+            document_entry = documents.setdefault(
+                document_id,
+                {
+                    "metadata": self._document_metadata(metadata),
+                    "sections": OrderedDict(),
+                },
+            )
+            sections = document_entry["sections"]
+            section_entry = sections.setdefault(
+                section_title,
+                {
+                    "metadata": self._section_metadata(metadata),
+                    "leaves": [],
+                },
+            )
+            section_entry["leaves"].append(leaf)
+
+        all_nodes: List[TextNode] = []
+        for document_entry in documents.values():
+            section_pairs: List[tuple[TextNode, List[TextNode]]] = []
+            for section_title, section_entry in document_entry["sections"].items():
+                section_leaves = list(section_entry["leaves"])
+                section_node = TextNode(
+                    text=self._join_text([section_title, *[leaf.text for leaf in section_leaves]]),
+                    metadata=dict(section_entry["metadata"]),
+                )
+                for leaf in section_leaves:
+                    leaf.relationships[NodeRelationship.PARENT] = section_node.as_related_node_info()
+                section_node.relationships[NodeRelationship.CHILD] = [leaf.as_related_node_info() for leaf in section_leaves]
+                section_pairs.append((section_node, section_leaves))
+            root_node = TextNode(
+                text=self._join_text([section.text for section, _ in section_pairs]),
+                metadata=dict(document_entry["metadata"]),
+            )
+            for section_node, _section_leaves in section_pairs:
+                section_node.relationships[NodeRelationship.PARENT] = root_node.as_related_node_info()
+            root_node.relationships[NodeRelationship.CHILD] = [section.as_related_node_info() for section, _ in section_pairs]
+
+            all_nodes.append(root_node)
+            for section_node, section_leaves in section_pairs:
+                all_nodes.append(section_node)
+                all_nodes.extend(section_leaves)
+        return all_nodes
+
+    @staticmethod
+    def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """清理元数据，只保留需要持久化的基础元数据"""
+        clean: Dict[str, Any] = {}
+        for key in ("knowledge_base_id", "document_id", "source_path", "filename", "file_type", "parser_name"):
+            value = metadata.get(key)
+            if value is not None:
+                clean[key] = value
+        clean.setdefault("parser_name", "docling")
+        return clean
+
+    @staticmethod
+    def _document_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """提取文档级元数据"""
+        return {key: value for key, value in metadata.items() if key not in {"page_number", "section_title"}}
+
+    @staticmethod
+    def _section_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """提取章节级元数据"""
+        section_metadata = dict(metadata)
+        section_metadata.pop("page_number", None)
+        return section_metadata
+
+    @staticmethod
+    def _section_title(metadata: Dict[str, Any]) -> str:
+        """读取最近章节标题"""
+        # 优先使用显式章节标题
+        section_title = metadata.get("section_title")
+        if section_title:
+            return str(section_title)
+        # 如果没有显式章节标题，尝试使用 headings 列表中的最后一个非空标题
+        headings = metadata.get("headings")
+        if isinstance(headings, list):
+            for heading in reversed(headings):
+                if str(heading or "").strip():
+                    return str(heading).strip()
+        if headings:
+            return str(headings).strip()
+        return "全文"
+
+    @staticmethod
+    def _page_number(metadata: Dict[str, Any]) -> Optional[int]:
+        """读取该节点第一个可用页码"""
+        # 优先尝试直接获取页码字段
+        for key in ("page_number", "page_no", "page"):
+            value = metadata.get(key)
+            page_number = HierarchyBuilder._to_int(value)
+            if page_number is not None:
+                return page_number
+        # 如果没有直接页码字段，尝试从 doc_items 中获取
+        for item in HierarchyBuilder._iter_doc_items(metadata.get("doc_items")):
+            # 溯源信息
+            provenance = item.get("prov") or item.get("provenance") or []
+            # 处理单个字典情况
+            if isinstance(provenance, dict):
+                provenance = [provenance]
+            for entry in provenance:
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("page_no", "page_number", "page"):
+                    page_number = HierarchyBuilder._to_int(entry.get(key))
+                    if page_number is not None:
+                        return page_number
+        return None
+
+    @staticmethod
+    def _iter_doc_items(value: Any) -> List[dict]:
+        """规范化 Docling doc_items 列表"""
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _to_int(value: Any) -> Optional[int]:
+        """将页码转换为整数"""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _join_text(parts: Sequence[str]) -> str:
+        """合并节点文本"""
+        return "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+class MetadataTransform(TransformComponent):
     """
-    将 FinRAG 元数据赋值到层级节点的转换函数
+    将节点元数据赋值到层级节点的转换函数
     """
 
     _data_module: Any = PrivateAttr()
@@ -426,107 +538,43 @@ class FinRAGMetadataTransform(TransformComponent):
 
     @classmethod
     def class_name(cls) -> str:
-        return "finrag_metadata_transform"
+        return "metadata_transform"
 
     def __call__(self, nodes: Sequence[BaseNode], **kwargs: Any) -> Sequence[BaseNode]:
-        # 赋值 FinRAG 元数据到层级节点
+        # 赋值元数据到层级节点
         node_list = list(nodes)
-        self._data_module._assign_finrag_metadata(node_list)
+        self._data_module._assign_node_metadata(node_list)
         return node_list
 
 
-class LocalMarkdownElementNodeParser:
-    """本地 Markdown 表格元素解析器"""
-    @staticmethod
-    def create() -> TransformComponent:
-        """
-        创建本地 Markdown 表格元素解析器
-        Returns:
-            本地 Markdown 表格元素解析器
-        """
-        from llama_index.core.node_parser import MarkdownElementNodeParser
-        from llama_index.core.node_parser.relational.base_element import TableOutput
-
-        class _LocalParser(MarkdownElementNodeParser):
-            def extract_table_summaries(self, elements: List[Any]) -> None:
-                """
-                从 Markdown 元素中提取表格摘要
-                Args:
-                    elements: 包含 Markdown 元素的列表
-                """
-                # 遍历元素，提取表格摘要
-                for element in elements:
-                    # 如果元素是表格或表格文本，提取摘要并赋值
-                    if element.type in {"table", "table_text"}:
-                        element.table_output = TableOutput(
-                            # 表格摘要
-                            summary=str(element.element),
-                            # 表格列信息，置空为避免默认调用 LLM
-                            columns=[]
-                        )
-            # 异步提取表格摘要
-            async def aextract_table_summaries(self, elements: List[Any]) -> None:
-                self.extract_table_summaries(elements)
-
-        # 返回解析器实例，不包含元素附带的元数据
-        return _LocalParser.from_defaults(include_metadata=False)
+def _make_docling_node_parser() -> Any:
+    """延迟创建 DoclingNodeParser，避免导入阶段强依赖扩展包"""
+    try:
+        from llama_index.node_parser.docling import DoclingNodeParser
+    except Exception as exc:
+        raise RuntimeError("Docling 分块需要安装 llama-index-node-parser-docling 依赖") from exc
+    return DoclingNodeParser()
 
 
 def build_ingestion_pipeline(
     data_module: Any,
     embed_model: Any,
-    *,
-    use_semantic_chunking: bool = False,
 ) -> Any:
     """
     构建 LlamaIndex IngestionPipeline 用于 FinRAG 索引流程
     Args:
         data_module: 数据模块，包含文档加载、分块和元数据处理
         embed_model: 嵌入模型，用于将文本转换为向量表示
-        use_semantic_chunking: 是否使用语义分块（默认 False）
     Returns:
         构建好的 IngestionPipeline
     """
     from llama_index.core.ingestion import IngestionPipeline
 
-    # 分块大小
-    chunk_sizes = [
-        max(data_module.chunk_size * 4, data_module.chunk_size),
-        max(data_module.chunk_size * 2, data_module.chunk_size),
-        data_module.chunk_size,
-    ]
-    # 转换链
-    transformations: list[Any] = []
-
-    # 添加本地 Markdown 表格元素解析器
-    transformations.append(LocalMarkdownElementNodeParser.create())
-
-    # 使用语义分块
-    if use_semantic_chunking:
-        from llama_index.core.node_parser import SemanticSplitterNodeParser
-        # 添加语义分块节点解析器
-        transformations.append(
-            SemanticSplitterNodeParser.from_defaults(
-                embed_model=embed_model,
-                breakpoint_percentile_threshold=95, # 语义分块阈值
-                buffer_size=1, # 上下文窗口大小
-            )
-        )
-    # 默认使用层级分块
-    else:
-        # 添加层级分块节点解析器
-        transformations.append(
-            HierarchicalNodeParser.from_defaults(
-                chunk_sizes=chunk_sizes,
-                chunk_overlap=data_module.chunk_overlap,
-                include_metadata=False, # 生成节点时，节点文本内容不包含文档元数据
-            )
-        )
-    # 添加 FinRAG 元数据赋值转换函数
-    transformations.append(FinRAGMetadataTransform(data_module))
-    # 添加嵌入模型
-    transformations.append(embed_model)
-
     return IngestionPipeline(
-        transformations=transformations, # 转换链
+        transformations=[
+            _make_docling_node_parser(),
+            HierarchyBuilder(),
+            MetadataTransform(data_module),
+            embed_model,
+        ],
     )

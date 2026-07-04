@@ -7,12 +7,14 @@ __pycache__/
 .eggs/
 .mypy_cache/
 .ruff_cache/
+.debug/
 .pytest_cache/
 .pytest-tmp*/
 .pytest-red*/
 .pytest-review*/
 pytest-cache-files-*/
 /storage/
+/output/ingestion-preview/
 apps/web/dist/
 apps/web/node_modules/
 apps/web/node_modules/.vite/

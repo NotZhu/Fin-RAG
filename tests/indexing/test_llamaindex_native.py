@@ -16,7 +16,7 @@ def test_nodes_use_llamaindex_native_documents_and_nodes(tmp_path):
     source = tmp_path / "policy.md"
     source.write_text("# 适当性制度\n客户风险等级应与产品风险等级匹配", encoding="utf-8")
 
-    module = DataPreparationModule(str(tmp_path), knowledge_base_id="kb-finance", chunk_size=80, chunk_overlap=10)
+    module = DataPreparationModule(str(tmp_path), knowledge_base_id="kb-finance")
     documents = module.load_documents()
     all_nodes, nodes = module._build_hierarchical_nodes(documents)
     module.load_prepared_nodes(all_nodes)

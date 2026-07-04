@@ -23,7 +23,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 
 - **可审计文档生命周期**：`DocumentLifecycleService` 负责安全文件名、`content_hash` 去重、`.pending` 暂存、源文件提升、删除和重建索引；文档注册表对外暴露 `document_id`、`status`、`chunk_count`、`upload_time` 和错误信息。
 - **原生 Milvus 检索**：`MilvusNativeHybridRetriever` 优先使用 Milvus `HYBRID` 查询模式，dense embedding 来自 DashScope `text-embedding-v4`，sparse embedding 由 PostgreSQL BM25 状态和中文分词生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选；当 collection 没有 sparse schema 时自动降级为 dense-only 检索。
-- **层级证据窗口**：`HierarchicalNodeParser.from_defaults(chunk_sizes=[1200, 600, 300])` 构建 root / parent / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
+- **层级证据窗口**：`DoclingNodeParser` 生成结构化 leaf nodes，`HierarchyBuilder` 构建 root / section / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
 - **路由化问答编排**：`llamaindex_router` 将问题路由到知识库问答或普通 LLM；知识库内部按 HyDE、step-back、auto-merge 查询工具处理不同问题形态。
 - **可观测生成接口**：`/knowledge-bases/{knowledge_base_id}/ask` 以 SSE 输出 `analysis`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时在最终 `done.response.trace.pipeline_steps` 返回问答完成后的完整检索链路快照、Milvus 检索元信息、auto-merge 配置、来源节点和阶段耗时。
 - **工程化运行底座**：PostgreSQL 承载 documents、docstore、BM25、manifest，Milvus 存储 leaf node dense vectors 和可选 sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
@@ -67,9 +67,9 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 └───────────────┬──────────────┘                └──────────────┬──────────────┘
                 │                                              │
 ┌───────────────▼──────────────┐                ┌──────────────▼──────────────┐
-│ ParserRegistry               │                │ Knowledge Router            │
-│ md/txt/pdf/docx/csv/json/... │                │ HyDE · step-back            │
-│ structured table extraction  │                │ auto_merge                  │
+│ Docling Ingestion            │                │ Knowledge Router            │
+│ unified document parsing     │                │ HyDE · step-back            │
+│ markdown/json grounding      │                │ auto_merge                  │
 └───────────────┬──────────────┘                └──────────────┬──────────────┘
                 │                                              │
 ┌───────────────▼──────────────┐                ┌──────────────▼──────────────┐
@@ -101,11 +101,11 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 1. **Document Lifecycle**
    `/knowledge-bases/{knowledge_base_id}/documents/upload` 对上传文件执行扩展名校验、大小校验和安全文件名提取；`DocumentLifecycleService` 将文件写入受管理源文件目录，计算 `content_hash`，维护 `uploaded`、`parsing`、`indexed`、`failed`、`deleted` 状态，并支持同步索引、后台索引、删除和重建索引。
 2. **Parsing & Metadata**
-   解析层当前开放 Markdown、TXT、PDF、DOCX、CSV、JSON、HTML/HTM、XLSX、PPTX。Markdown/TXT 按文本读取；PDF 优先使用 PyMuPDF 按页提取文本，pypdf 作为文本提取备选；DOCX 按正文书写顺序保留段落和表格，表格转为 Markdown；CSV、XLSX、PPTX 中的表格会转为 Markdown 表格，JSON 会展平成可读键值列表，HTML 保留标题、段落、列表和表格。解析结果生成 LlamaIndex `Document` 并写入可检索元数据：`knowledge_base_id`、`document_id`、`filename`、`file_type`、`page_number`。`source_path`、`content_hash` 等内部字段保存在注册表和托管文件服务中，API 响应暴露适合工作台展示的公共字段。
+   解析层开放企业 RAG 常见资料格式：PDF、DOCX、PPTX、XLSX、CSV、Markdown/TXT、HTML/HTM、JSON，以及 PNG/JPEG/TIFF 图片/OCR 文档，并统一交由 Docling 做文档理解和 JSON 结构化输出。Docling 负责复杂版面、表格结构和 OCR/扫描件能力；系统将解析结果转换为 LlamaIndex `Document`，并写入必要元数据：`knowledge_base_id`、`document_id`、`source_path`、`filename`、`file_type`、`parser_name`。`content_hash` 等生命周期字段保存在注册表和托管文件服务中，API 响应暴露适合工作台展示的公共字段。
 3. **Hierarchical Chunking**
-   `DataPreparationModule` 默认使用 `HierarchicalNodeParser.from_defaults(chunk_sizes=[1200, 600, 300])` 构建 root / parent / leaf 层级节点；默认 `RAG_CHUNK_SIZE=300`、`RAG_CHUNK_OVERLAP=60`。`RAG_USE_SEMANTIC_CHUNKING=true` 时会改用 `SemanticSplitterNodeParser` 做语义切分实验，变更后需要重建知识库。完整节点写入 PostgreSQL docstore，`get_leaf_nodes()` 输出的 leaf nodes 进入 Milvus 检索索引。每个 leaf node 携带 `chunk_id`、`parent_chunk_id`、`root_chunk_id`、`chunk_level` 和 `chunk_idx`，用于回源、合并和引用。
+   `DataPreparationModule` 使用 `DoclingNodeParser` 生成结构化 leaf nodes，再由 `HierarchyBuilder` 按文档和章节构建 root / section / leaf 层级。完整节点写入 PostgreSQL docstore，`get_leaf_nodes()` 输出的 leaf nodes 进入 Milvus 检索索引。每个 leaf node 携带 `chunk_id`、`parent_chunk_id`、`root_chunk_id`、`chunk_level`、`chunk_idx`、`page_number` 和 `section_title`，用于回源、合并和引用。
 4. **Index Persistence**
-   `FinRAGSystem` 将文档记录、LlamaIndex nodes、BM25 term statistics 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type`、`page_number` 等 scalar fields 保存 leaf vectors。
+   `FinRAGSystem` 将文档记录、LlamaIndex nodes、BM25 term statistics 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type` 等 scalar fields 保存 leaf vectors。
 5. **Hybrid Retrieval**
    检索策略为 `llamaindex_router`。`MilvusNativeHybridRetriever(BaseRetriever)` 在 sparse schema 可用时发起 Milvus `VectorStoreQueryMode.HYBRID` 查询，使用 `RAG_RETRIEVAL_CANDIDATE_K` 控制 dense/sparse/hybrid 候选规模；没有 sparse schema 时自动使用 `VectorStoreQueryMode.DEFAULT` dense-only 检索。系统使用 `RAG_TOP_K` 控制最终证据数量，并通过 `MetadataFilters` 限定 `knowledge_base_id`。
 6. **Context Assembly**
@@ -122,7 +122,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - LlamaIndex 原生 Document / TextNode / NodeWithScore / RetrieverQueryEngine / RouterQueryEngine
 - Milvus dense 向量存储、可选 sparse 向量存储与 LlamaIndex VectorStoreIndex
 - BM25 sparse embedding、jieba
-- PyMuPDF、pypdf、python-docx、openpyxl、python-pptx、BeautifulSoup 文档解析
+- Docling 统一文档理解与 Markdown/JSON 解析
 - Qwen / DashScope LlamaIndex 原生集成
 - PostgreSQL 文档、节点、BM25 状态和索引 manifest 存储
 - Ragas（`eval` extra）
@@ -171,8 +171,6 @@ Copy-Item .env.example .env
 ```env
 RAG_EMBEDDING_MODEL=text-embedding-v4
 RAG_RERANKER_PROVIDER=none
-RAG_CHUNK_SIZE=300
-RAG_CHUNK_OVERLAP=60
 ```
 
 启动索引前需要在 `.env` 中配置 API key：
@@ -466,8 +464,6 @@ npm run build
 | `RAG_RETRIEVAL_STRATEGY`         | `llamaindex_router`                  | 固定检索编排策略                           |
 | `RAG_LLAMAINDEX_INDEX_STORE_DIR` | `storage/llamaindex`                 | LlamaIndex index metadata 本地目录         |
 | `RAG_SCORE_THRESHOLD`            | `0.0`                                | 检索候选分数过滤阈值                       |
-| `RAG_CHUNK_SIZE`                 | `300`                                | 叶子节点大小；层级分块为 1200/600/300      |
-| `RAG_CHUNK_OVERLAP`              | `60`                                 | 分块重叠                                   |
 | `RAG_RERANKER_PROVIDER`          | `none`                               | Reranker 类型：`none / jina`             |
 | `RAG_RERANKER_MODEL`             | `jina-reranker-v2-base-multilingual` | Jina-compatible rerank 模型                |
 | `RAG_RERANKER_ENDPOINT`          | ``                                     | Jina-compatible HTTP rerank endpoint       |
@@ -476,7 +472,6 @@ npm run build
 | `RAG_AUTO_MERGE_RATIO_THRESHOLD` | `0.5`                                | LlamaIndex AutoMergingRetriever ratio 阈值 |
 | `RAG_CONTEXT_TOKEN_BUDGET`       | `2400`                               | LlamaIndex node postprocessor 上下文预算   |
 | `RAG_NEIGHBOR_WINDOW`            | `1`                                  | 命中节点前后相邻节点扩展数量               |
-| `RAG_USE_SEMANTIC_CHUNKING`      | `false`                              | 是否启用语义分块；变更后需要重建知识库     |
 | `RAG_MAX_UPLOAD_BYTES`           | `20971520`                           | 单个上传文件最大字节数                     |
 | `RAG_TEMPERATURE`                | `0.1`                                | 生成温度                                   |
 | `RAG_MAX_TOKENS`                 | `2048`                               | 生成长度上限                               |
