@@ -1,4 +1,4 @@
-"""FinRAG 的 LlamaIndex + Milvus dense 索引构建模块"""
+"""FinRAG 的 LlamaIndex + Milvus dense/BM25 hybrid 索引构建模块"""
 
 from __future__ import annotations
 
@@ -13,16 +13,14 @@ from llama_index.core.schema import TextNode
 from llama_index.core.storage.docstore.types import BaseDocumentStore
 from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
 from llama_index.core.vector_stores.types import BasePydanticVectorStore
-from llama_index.vector_stores.milvus.utils import BaseSparseEmbeddingFunction
-
-from finrag.retrieval.tokenization import tokenize_chinese_text
-from finrag.storage.protocols import SparseVector
+from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_SCHEMA_VERSION = 2 # 当前索引 manifest schema 版本
+MANIFEST_SCHEMA_VERSION = 3 # 当前索引 manifest schema 版本
 INDEX_TYPE = "LlamaIndexRouter" # 当前索引类型标识
 MILVUS_COLLECTION_NAME = "finrag_leaf_nodes" # 默认 Milvus collection 名称
+SPARSE_PROVIDER = "milvus_builtin_bm25" # Sparse 向量生成提供方
 DOCLING_NODE_STRUCTURE = {
     "parser": "docling_node_parser",
     "hierarchy": ["document", "section", "leaf"],
@@ -86,7 +84,7 @@ DENSE_SEARCH_CONFIG = { # Dense 向量检索配置
 }
 SPARSE_INDEX_CONFIG = { # Sparse 向量索引配置
     "index_type": "SPARSE_INVERTED_INDEX",
-    "metric_type": "IP",
+    "metric_type": "BM25",
 }
 DASHSCOPE_EMBEDDING_DIMENSIONS = { # DashScope embedding 模型到向量维度的映射
     "text-embedding-v4": 1024,
@@ -94,77 +92,8 @@ DASHSCOPE_EMBEDDING_DIMENSIONS = { # DashScope embedding 模型到向量维度�
 DASHSCOPE_EMBED_BATCH_SIZE = 10 # DashScope embedding 批量请求大小
 
 
-class BM25SparseEmbeddingFunction(BaseSparseEmbeddingFunction):
-    """将 PostgreSQL BM25StateStore 稀疏向量接入 LlamaIndex Milvus 混合检索钩子"""
-
-    def __init__(self, bm25_store: Any, knowledge_base_id: str):
-        """
-        初始化 BM25 稀疏向量函数
-        Args:
-            bm25_store: 提供稀疏向量构建能力的 BM25 状态存储
-            knowledge_base_id: 当前知识库 ID
-        """
-        self.bm25_store = bm25_store
-        self.knowledge_base_id = knowledge_base_id
-
-    def set_knowledge_base_id(self, knowledge_base_id: str) -> None:
-        """
-        切换稀疏向量构建所使用的知识库上下文
-        Args:
-            knowledge_base_id: 当前知识库 ID
-        """
-        self.knowledge_base_id = knowledge_base_id
-
-    def encode_queries(self, queries: List[str]) -> List[Dict[int, float]]:
-        """
-        将查询文本编码为 Milvus 稀疏向量字典
-        Args:
-            queries: 查询文本列表
-        Returns:
-            每个查询对应的稀疏向量字典列表
-        """
-        return [
-            self._sparse_to_dict(
-                self.bm25_store.build_query_sparse_vector(
-                    self.knowledge_base_id,
-                    tokenize_chinese_text(query),
-                )
-            )
-            for query in queries
-        ]
-
-    def encode_documents(self, documents: List[str]) -> List[Dict[int, float]]:
-        """
-        将文档文本编码为 Milvus 稀疏向量字典
-        Args:
-            documents: 文档文本列表
-        Returns:
-            每个文档对应的稀疏向量字典列表
-        """
-        return [
-            self._sparse_to_dict(
-                self.bm25_store.build_document_sparse_vector(
-                    self.knowledge_base_id,
-                    tokenize_chinese_text(document),
-                )
-            )
-            for document in documents
-        ]
-
-    @staticmethod
-    def _sparse_to_dict(vector: SparseVector) -> Dict[int, float]:
-        """
-        将协议层 SparseVector 转换为 Milvus 需要的字典结构
-        Args:
-            vector: 稀疏向量协议对象
-        Returns:
-            非零维度到权重的映射
-        """
-        return {int(index): float(value) for index, value in zip(vector.indices, vector.values) if float(value) != 0.0}
-
-
 class IndexConstructionModule:
-    """构建和加载 LlamaIndex Milvus dense 向量索引"""
+    """构建和加载 LlamaIndex Milvus dense/BM25 hybrid 向量索引"""
 
     def __init__(
         self,
@@ -176,7 +105,7 @@ class IndexConstructionModule:
         milvus_port: int = 19530,
         embed_model: Optional[BaseEmbedding] = None,
         manifest_store: Optional[Any] = None,
-        sparse_embedding_function: Optional[BaseSparseEmbeddingFunction] = None,
+        enable_sparse: bool = True,
         rrf_k: int = 60,
     ):
         """
@@ -189,14 +118,15 @@ class IndexConstructionModule:
             milvus_port: Milvus 端口
             embed_model: 可直接注入的 LlamaIndex embedding 模型
             manifest_store: 索引清单持久化存储
-            sparse_embedding_function: 可选稀疏向量函数
+            enable_sparse: 是否启用 Milvus 内置 BM25 sparse 向量
             rrf_k: 混合排序的 RRF 参数
         """
         self.model_name = model_name # 嵌入模型名称
         self.collection_name = collection_name # Milvus collection 名称
         self.milvus_uri = milvus_uri or f"http://{milvus_host}:{int(milvus_port)}" # Milvus URI
         self.manifest_store = manifest_store # 索引清单持久化存储
-        self.sparse_embedding_function = sparse_embedding_function # 可选稀疏向量函数
+        self.enable_sparse = bool(enable_sparse) # 是否启用 Milvus 内置 BM25 sparse 向量
+        self.sparse_embedding_function = self._build_sparse_embedding_function() if self.enable_sparse else None
         self.rrf_k = int(rrf_k) # RRF 算法参数
         self.embed_model = embed_model or self._build_embedding_model() # LlamaIndex embedding 模型实例
         self.embedding_dimensions = self._infer_embedding_dimensions(self.embed_model) or self._known_embedding_dimensions(self.model_name) # 向量维度
@@ -205,6 +135,14 @@ class IndexConstructionModule:
         self.vector_store: Optional[BasePydanticVectorStore] = None # 向量存储实例
         self.storage_context: Optional[StorageContext] = None # 存储上下文实例
         self.index: Optional[VectorStoreIndex] = None # 索引实例实例
+
+    @staticmethod
+    def _build_sparse_embedding_function() -> BM25BuiltInFunction:
+        """构建 Milvus 内置 BM25 sparse 向量函数"""
+        return BM25BuiltInFunction(
+            input_field_names=TEXT_FIELD,
+            output_field_names=SPARSE_EMBEDDING_FIELD,
+        )
 
     def _build_embedding_model(self) -> BaseEmbedding:
         """
@@ -263,7 +201,6 @@ class IndexConstructionModule:
         self,
         *,
         knowledge_base_id: str = "",
-        llamaindex_index_store_dir: str = "",
         index_ids: list[str] | None = None,
         document_count: int = 0,
         node_count: int = 0,
@@ -274,7 +211,6 @@ class IndexConstructionModule:
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "index_type": INDEX_TYPE,
             "knowledge_base_id": str(knowledge_base_id or ""),
-            "llamaindex_index_store_dir": str(llamaindex_index_store_dir or ""),
             "index_ids": list(index_ids or ["finrag-auto-merge"]),
             "embedding": {
                 "model": self.model_name,
@@ -283,10 +219,11 @@ class IndexConstructionModule:
             "milvus": {
                 "collection": self.collection_name,
                 "dense_embedding_field": DENSE_EMBEDDING_FIELD,
-                "sparse_enabled": self.sparse_embedding_function is not None,
+                "sparse_enabled": self.enable_sparse,
+                "sparse_provider": SPARSE_PROVIDER if self.enable_sparse else None,
                 "scalar_fields": _milvus_scalar_field_names(),
                 "dense_index": dict(DENSE_INDEX_CONFIG),
-                "sparse_index": dict(SPARSE_INDEX_CONFIG) if self.sparse_embedding_function is not None else None,
+                "sparse_index": dict(SPARSE_INDEX_CONFIG) if self.enable_sparse else None,
                 "rrf_k": self.rrf_k,
             },
             "node_structure": dict(DOCLING_NODE_STRUCTURE),
@@ -498,7 +435,7 @@ class IndexConstructionModule:
             "overwrite": bool(reset), # 是否覆盖重建 collection
             "upsert_mode": True, # 启用 upsert 模式以支持增量更新
             "enable_dense": True, # 启用密集向量索引
-            "enable_sparse": self.sparse_embedding_function is not None, # 是否启用稀疏向量索引
+            "enable_sparse": self.enable_sparse, # 是否启用稀疏向量索引
             "dim": self.embedding_dimensions, # Dense embedding 维度
             "embedding_field": DENSE_EMBEDDING_FIELD, # Dense embedding 字段名
             "sparse_embedding_field": SPARSE_EMBEDDING_FIELD, # Sparse embedding 字段名

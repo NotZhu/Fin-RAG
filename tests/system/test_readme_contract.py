@@ -10,7 +10,6 @@ def test_readme_is_github_style_and_current_state_only():
         "LlamaIndex",
         "Milvus",
         "PostgreSQL",
-        "Redis",
         "React 18",
         "Vite 5",
         "pytest",
@@ -21,7 +20,7 @@ def test_readme_is_github_style_and_current_state_only():
     for historical_term in ["改造", "迁移", "Phase", "legacy", "fallback", "旧实现"]:
         assert historical_term not in readme
 
-    assert "docker compose up -d postgres redis etcd minio milvus" in readme
+    assert "docker compose up -d postgres etcd minio milvus" in readme
     assert "finrag rebuild --knowledge-base-id finance" in readme
     assert "uvicorn finrag.api:app --host 127.0.0.1 --port 8000" in readme
     assert "python -m scripts.evaluate_retrieval --json" in readme

@@ -27,13 +27,13 @@ def test_project_text_no_longer_mentions_chroma_or_vector_gateway():
     assert "RAG_STORAGE_BACKEND" not in combined
 
 
-def test_runtime_dependencies_include_postgres_and_redis_clients():
+def test_runtime_dependencies_include_postgres_client_only():
     project_root = Path(__file__).resolve().parents[2]
     pyproject = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = "\n".join(pyproject["project"]["dependencies"])
 
     assert "psycopg" in dependencies
-    assert "redis" in dependencies
+    assert "redis" not in dependencies
 
 
 def test_integration_test_entrypoint_exists():

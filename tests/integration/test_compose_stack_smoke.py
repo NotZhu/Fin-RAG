@@ -15,5 +15,4 @@ def test_compose_stack_ports_are_available_when_enabled():
         pytest.skip("docker compose up 后设置 FINRAG_RUN_INTEGRATION=1 才运行真实栈冒烟测试")
 
     assert _port_open("127.0.0.1", 5432)
-    assert _port_open("127.0.0.1", 6379)
     assert _port_open("127.0.0.1", 19530)

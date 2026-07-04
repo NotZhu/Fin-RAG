@@ -6,9 +6,6 @@ import pytest
 
 TABLES = (
     "finrag_knowledge_bases",
-    "bm25_term_counts",
-    "bm25_chunks",
-    "bm25_terms",
     "finrag_index_manifest",
     "finrag_llama_doc_hashes",
     "finrag_ref_docs",

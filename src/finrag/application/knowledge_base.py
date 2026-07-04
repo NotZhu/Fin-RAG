@@ -12,7 +12,7 @@ from finrag.application.llamaindex_engines import KnowledgeBaseUnavailableError
 from finrag.application.runtime import KnowledgeBaseRuntime
 from finrag.core.node_schema import TextNode
 from finrag.generation import GenerationIntegrationModule
-from finrag.indexing import BM25SparseEmbeddingFunction, DataPreparationModule, IndexConstructionModule
+from finrag.indexing import DataPreparationModule, IndexConstructionModule
 
 
 class KnowledgeBaseService:
@@ -62,10 +62,6 @@ class KnowledgeBaseService:
             milvus_host=system.config.milvus_host, # Milvus 主机地址
             milvus_port=system.config.milvus_port, # Milvus 端口号
             manifest_store=system.manifest_store, # 知识库清单存储模块
-            sparse_embedding_function=BM25SparseEmbeddingFunction(
-                system.bm25_store,
-                scope.knowledge_base_id,
-            ) if system.bm25_store is not None else None, # 可选的 BM25 稀疏嵌入函数
             rrf_k=system.config.rrf_k, # RRF 算法参数
         )
         # 初始化生成模块

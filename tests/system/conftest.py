@@ -3,7 +3,6 @@ import pytest
 import finrag.application.system as system_module
 import finrag.storage as stores_module
 from tests.support.fakes import (
-    MemoryBM25StateStore,
     MemoryDocumentRegistry,
     MemoryIndexManifestStore,
     MemoryKnowledgeBaseRegistry,
@@ -12,7 +11,7 @@ from tests.support.fakes import (
 
 
 @pytest.fixture(autouse=True)
-def fake_postgres_redis_stack(monkeypatch):
+def fake_postgres_stack(monkeypatch):
     class TestDocumentRegistry(MemoryDocumentRegistry):
         def __init__(self, database_url):
             super().__init__(database_url)
@@ -67,10 +66,6 @@ def fake_postgres_redis_stack(monkeypatch):
             for nid in to_delete:
                 del self.nodes[nid]
 
-    class TestBM25StateStore(MemoryBM25StateStore):
-        def __init__(self, database_url):
-            super().__init__(database_url)
-
     class TestIndexManifestStore(MemoryIndexManifestStore):
         def __init__(self, database_url):
             super().__init__(database_url)
@@ -82,6 +77,5 @@ def fake_postgres_redis_stack(monkeypatch):
     for target in (stores_module, system_module):
         monkeypatch.setattr(target, "PostgreSQLDocumentRegistry", TestDocumentRegistry, raising=False)
         monkeypatch.setattr(target, "PostgreSQLLlamaIndexDocumentStore", TestLlamaIndexDocumentStore, raising=False)
-        monkeypatch.setattr(target, "PostgreSQLBM25StateStore", TestBM25StateStore, raising=False)
         monkeypatch.setattr(target, "PostgreSQLIndexManifestStore", TestIndexManifestStore, raising=False)
         monkeypatch.setattr(target, "PostgreSQLKnowledgeBaseRegistry", TestKnowledgeBaseRegistry, raising=False)

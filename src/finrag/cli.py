@@ -84,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # 添加子命令解析器
     subparsers = parser.add_subparsers(dest="command")
     # 添加重建索引子命令
-    rebuild_parser = subparsers.add_parser("rebuild", help="从源文档全量重建 PostgreSQL/BM25/Milvus 索引")
+    rebuild_parser = subparsers.add_parser("rebuild", help="从源文档全量重建 PostgreSQL 节点和 Milvus 索引")
     rebuild_parser.add_argument(
         "--knowledge-base-id",
         "--kb",

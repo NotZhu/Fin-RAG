@@ -5,7 +5,6 @@
 [![LlamaIndex](https://img.shields.io/badge/LlamaIndex-0.12+-4B5563)](#runtime-stack)
 [![Milvus](https://img.shields.io/badge/Milvus-2.4-00A1EA)](#runtime-stack)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791)](#runtime-stack)
-[![Redis](https://img.shields.io/badge/Redis-7-DC382D)](#runtime-stack)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB)](#runtime-stack)
 [![Vite 5](https://img.shields.io/badge/Vite-5-646CFF)](#runtime-stack)
 [![pytest](https://img.shields.io/badge/pytest-enabled-0A9EDC)](#testing)
@@ -22,11 +21,11 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 ## Highlights
 
 - **可审计文档生命周期**：`DocumentLifecycleService` 负责安全文件名、`content_hash` 去重、`.pending` 暂存、源文件提升、删除和重建索引；文档注册表对外暴露 `document_id`、`status`、`chunk_count`、`upload_time` 和错误信息。
-- **原生 Milvus 检索**：`MilvusNativeHybridRetriever` 优先使用 Milvus `HYBRID` 查询模式，dense embedding 来自 DashScope `text-embedding-v4`，sparse embedding 由 PostgreSQL BM25 状态和中文分词生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选；当 collection 没有 sparse schema 时自动降级为 dense-only 检索。
+- **原生 Milvus 检索**：`MilvusNativeHybridRetriever` 优先使用 Milvus `HYBRID` 查询模式，dense embedding 来自 DashScope `text-embedding-v4`，sparse embedding 由 Milvus 内置 BM25 function 生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选；当 collection 没有 sparse schema 时自动降级为 dense-only 检索。
 - **层级证据窗口**：`DoclingNodeParser` 生成结构化 leaf nodes，`HierarchyBuilder` 构建 root / section / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
 - **路由化问答编排**：`llamaindex_router` 将问题路由到知识库问答或普通 LLM；知识库内部按 HyDE、step-back、auto-merge 查询工具处理不同问题形态。
 - **可观测生成接口**：`/knowledge-bases/{knowledge_base_id}/ask` 以 SSE 输出 `analysis`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时在最终 `done.response.trace.pipeline_steps` 返回问答完成后的完整检索链路快照、Milvus 检索元信息、auto-merge 配置、来源节点和阶段耗时。
-- **工程化运行底座**：PostgreSQL 承载 documents、docstore、BM25、manifest，Milvus 存储 leaf node dense vectors 和可选 sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
+- **工程化运行底座**：PostgreSQL 承载 documents、docstore、manifest 和 knowledge base registry，Milvus 存储 leaf node dense vectors 和内置 BM25 sparse vectors，Docker Compose 提供本地依赖栈，pytest 与 Vitest 覆盖后端、检索、API 和 Web 工作台。
 
 ## Capabilities
 
@@ -34,7 +33,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | 文档生命周期 | 支持 Markdown / TXT / PDF / DOCX / CSV / JSON / HTML/HTM / XLSX / PPTX 上传、同步或异步索引、列表、删除、重建索引，按 `content_hash` 识别重复内容                              |
 | 文档建模     | 使用稳定 `document_id` / `chunk_id`、资料库 ID、页码、文件类型和父级/根级节点关系，保证检索、回源和引用一致                            |
-| 索引存储     | leaf nodes 写入 Milvus dense collection 和可选 sparse schema，完整层级节点写入 PostgreSQL docstore，BM25 统计和 manifest 独立持久化                      |
+| 索引存储     | leaf nodes 写入 Milvus dense collection 和内置 BM25 sparse schema，完整层级节点写入 PostgreSQL docstore，index manifest 独立持久化                      |
 | 检索增强     | 基于 Milvus native hybrid 或 dense-only 检索、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集                           |
 | 可信生成     | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段                        |
 | 可观测性     | SSE 事件流覆盖分析、路由、来源、token、完成与错误；最终 trace 记录 route、pipeline steps、retrieved/evidence nodes 和耗时        |
@@ -89,8 +88,8 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
                 │
 ┌───────────────▼──────────────────────┐        ┌─────────────────────────────┐
 │ PostgreSQL                           │        │ Milvus                      │
-│ document registry · docstore · BM25  │        │ dense leaf vectors          │
-│ index manifest · knowledge bases     │        │ optional sparse vectors     │
+│ document registry · docstore         │        │ dense leaf vectors          │
+│ index manifest · knowledge bases     │        │ built-in BM25 sparse vectors│
 └──────────────────────────────────────┘        └─────────────────────────────┘
 ```
 
@@ -105,7 +104,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 3. **Hierarchical Chunking**
    `DataPreparationModule` 使用 `DoclingNodeParser` 生成结构化 leaf nodes，再由 `HierarchyBuilder` 按文档和章节构建 root / section / leaf 层级。完整节点写入 PostgreSQL docstore，`get_leaf_nodes()` 输出的 leaf nodes 进入 Milvus 检索索引。每个 leaf node 携带 `chunk_id`、`parent_chunk_id`、`root_chunk_id`、`chunk_level`、`chunk_idx`、`page_number` 和 `section_title`，用于回源、合并和引用。
 4. **Index Persistence**
-   `FinRAGSystem` 将文档记录、LlamaIndex nodes、BM25 term statistics 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type` 等 scalar fields 保存 leaf vectors。
+   `FinRAGSystem` 将文档记录、LlamaIndex nodes 和 index manifest 持久化到 PostgreSQL；Milvus collection 使用 dense field、内置 BM25 sparse field 以及 `document_id`、`knowledge_base_id`、`filename`、`file_type` 等 scalar fields 保存 leaf vectors。
 5. **Hybrid Retrieval**
    检索策略为 `llamaindex_router`。`MilvusNativeHybridRetriever(BaseRetriever)` 在 sparse schema 可用时发起 Milvus `VectorStoreQueryMode.HYBRID` 查询，使用 `RAG_RETRIEVAL_CANDIDATE_K` 控制 dense/sparse/hybrid 候选规模；没有 sparse schema 时自动使用 `VectorStoreQueryMode.DEFAULT` dense-only 检索。系统使用 `RAG_TOP_K` 控制最终证据数量，并通过 `MetadataFilters` 限定 `knowledge_base_id`。
 6. **Context Assembly**
@@ -120,11 +119,10 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - Python 3.11
 - FastAPI、Uvicorn
 - LlamaIndex 原生 Document / TextNode / NodeWithScore / RetrieverQueryEngine / RouterQueryEngine
-- Milvus dense 向量存储、可选 sparse 向量存储与 LlamaIndex VectorStoreIndex
-- BM25 sparse embedding、jieba
+- Milvus dense 向量存储、内置 BM25 sparse 向量存储与 LlamaIndex VectorStoreIndex
 - Docling 统一文档理解与 Markdown/JSON 解析
 - Qwen / DashScope LlamaIndex 原生集成
-- PostgreSQL 文档、节点、BM25 状态和索引 manifest 存储
+- PostgreSQL 文档、节点和索引 manifest 存储
 - Ragas（`eval` extra）
 - React 18、Vite 5、TypeScript、Vitest
 
@@ -137,7 +135,7 @@ src/finrag/api/           FastAPI app、routes、middleware、error handlers
 src/finrag/core/          配置、LlamaIndex 类型 re-export、响应 schema
 src/finrag/storage/       PostgreSQL stores、DB helper、protocols
 src/finrag/ingestion/     文档记录、元数据工具、多格式解析和 load documents
-src/finrag/indexing/      层级节点、auto merge、Milvus index、BM25 sparse embedding
+src/finrag/indexing/      层级节点、auto merge、Milvus dense/BM25 hybrid index
 src/finrag/retrieval/     llamaindex_router / native hybrid / rerank
 src/finrag/generation/    DashScope LLM 初始化
 data/documents/           多知识库样例源文件与上传后托管的源文件
@@ -185,7 +183,7 @@ RAG_KNOWLEDGE_BASE_ID=finance
 启动本地依赖、初始化默认知识库并运行 API：
 
 ```powershell
-docker compose up -d postgres redis etcd minio milvus
+docker compose up -d postgres etcd minio milvus
 uv run python -m finrag.cli rebuild --knowledge-base-id finance
 uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
@@ -227,10 +225,10 @@ npm run build
 | `POST`   | `/knowledge-bases`                                                        | 创建知识库，请求体为 `{"knowledge_base_id":"finance"}`                                        |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/archive`                            | 归档指定知识库，保留文档和索引，禁止问答、预热、重建和文档写入                                  |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/restore`                            | 恢复已归档知识库                                                                                |
-| `DELETE` | `/knowledge-bases/{knowledge_base_id}`                                    | 删除指定知识库，清理托管源文件、文档记录、BM25、docstore、manifest 和运行时缓存                 |
+| `DELETE` | `/knowledge-bases/{knowledge_base_id}`                                    | 删除指定知识库，清理托管源文件、文档记录、docstore、manifest 和运行时缓存                 |
 | `GET`    | `/knowledge-bases/{knowledge_base_id}/documents`                          | 返回指定知识库的公开文档列表和索引状态                                                          |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/documents/upload`                   | multipart 上传 Markdown / TXT / PDF / DOCX / CSV / JSON / HTML/HTM / XLSX / PPTX，表单字段支持 `async_index`                        |
-| `DELETE` | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}`            | 删除指定知识库中的文档、托管源文件、Milvus 向量、BM25 条目和 docstore 节点                      |
+| `DELETE` | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}`            | 删除指定知识库中的文档、托管源文件、Milvus 向量和 docstore 节点                      |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/documents/{document_id}/reindex`    | 对指定知识库中的文档重新解析并写入索引                                                          |
 | `POST`   | `/knowledge-bases/{knowledge_base_id}/ask`                            | 发起 `text/event-stream` 流式资料库问答                                                       |
 
@@ -437,7 +435,7 @@ python -m scripts.evaluate_ragas datasets/eval/finance_ragas_eval_set.jsonl --js
 
 ```bash
 uv run --with ruff ruff check --no-cache src scripts tests
-uv run pytest -q
+uv run python -m pytest -q
 uv lock --check
 cd apps/web
 npm test
@@ -452,7 +450,6 @@ npm run build
 | `RAG_UPLOAD_DIR`                 | `storage/uploads`                    | 上传文件临时保存目录                       |
 | `RAG_KNOWLEDGE_BASE_ID`          | `finance`                            | 默认资料库 ID                              |
 | `RAG_DATABASE_URL`               | `postgresql://.../finrag`            | PostgreSQL 连接串                          |
-| `RAG_REDIS_URL`                  | `redis://localhost:6379/0`           | Redis 连接串（预留）                       |
 | `RAG_MILVUS_HOST`                | `localhost`                          | Milvus 服务地址                            |
 | `RAG_MILVUS_PORT`                | `19530`                              | Milvus 服务端口                            |
 | `RAG_MILVUS_COLLECTION`          | `finrag_leaf_nodes`                  | Milvus leaf node collection                |
@@ -462,7 +459,6 @@ npm run build
 | `RAG_RETRIEVAL_CANDIDATE_K`      | `10`                                 | 初始召回候选数量                           |
 | `RAG_RRF_K`                      | `60`                                 | Milvus hybrid RRFRanker 的 `k` 参数      |
 | `RAG_RETRIEVAL_STRATEGY`         | `llamaindex_router`                  | 固定检索编排策略                           |
-| `RAG_LLAMAINDEX_INDEX_STORE_DIR` | `storage/llamaindex`                 | LlamaIndex index metadata 本地目录         |
 | `RAG_SCORE_THRESHOLD`            | `0.0`                                | 检索候选分数过滤阈值                       |
 | `RAG_RERANKER_PROVIDER`          | `none`                               | Reranker 类型：`none / jina`             |
 | `RAG_RERANKER_MODEL`             | `jina-reranker-v2-base-multilingual` | Jina-compatible rerank 模型                |
@@ -478,10 +474,10 @@ npm run build
 
 ## Operations
 
-本地依赖栈使用 PostgreSQL、Redis、etcd、MinIO 和 Milvus：
+本地依赖栈使用 PostgreSQL、etcd、MinIO 和 Milvus：
 
 ```powershell
-docker compose up -d postgres redis etcd minio milvus
+docker compose up -d postgres etcd minio milvus
 uv run python -m finrag.cli rebuild --knowledge-base-id finance
 uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
@@ -497,14 +493,14 @@ curl http://localhost:8000/ready
 
 ```powershell
 docker compose down -v --remove-orphans
-docker compose up -d postgres redis etcd minio milvus
+docker compose up -d postgres etcd minio milvus
 uv run python -m finrag.cli rebuild --knowledge-base-id finance
 uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
-`docker compose down -v` 会删除 compose 声明的 PostgreSQL、Redis、etcd、MinIO 和 Milvus 数据卷。需要同时清理本地上传缓存时，可额外删除 `storage/` 目录；示例数据集位于 `data/`，通常保留。
+`docker compose down -v` 会删除 compose 声明的 PostgreSQL、etcd、MinIO 和 Milvus 数据卷。需要同时清理本地上传缓存时，可额外删除 `storage/` 目录；示例数据集位于 `data/`，通常保留。
 
 常见恢复动作：
 
-- schema 或 manifest 不匹配：运行 `finrag rebuild --knowledge-base-id finance`，从指定知识库源文档重建 PostgreSQL `documents`、`nodes`、BM25 状态和 Milvus leaf vectors。
-- Milvus collection 损坏或被清空：运行 `finrag rebuild --knowledge-base-id finance`，对应 collection 会 drop/recreate 并重新写入 dense leaf vectors 和可选 sparse vectors。
+- schema 或 manifest 不匹配：运行 `finrag rebuild --knowledge-base-id finance`，从指定知识库源文档重建 PostgreSQL `documents`、`nodes`、manifest 和 Milvus leaf vectors。
+- Milvus collection 损坏或被清空：运行 `finrag rebuild --knowledge-base-id finance`，对应 collection 会 drop/recreate 并重新写入 dense leaf vectors 和内置 BM25 sparse vectors。

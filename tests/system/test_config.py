@@ -18,7 +18,8 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert config.reranker_endpoint == ""
     assert config.reranker_api_key == ""
     assert config.retrieval_strategy == "llamaindex_router"
-    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "storage" / "llamaindex"
+    assert not hasattr(config, "llamaindex_index_store_dir")
+    assert not hasattr(config, "redis_url")
     assert config.auto_merge_ratio_threshold == 0.5
     assert config.context_token_budget == 2400
     assert config.neighbor_window == 1
@@ -69,6 +70,7 @@ def test_config_can_be_created_from_environment(monkeypatch):
     monkeypatch.setenv("RAG_RERANKER_TOP_N", "4")
     monkeypatch.setenv("RAG_RETRIEVAL_STRATEGY", "llamaindex_router")
     monkeypatch.setenv("RAG_LLAMAINDEX_INDEX_STORE_DIR", "custom_llama")
+    monkeypatch.setenv("RAG_REDIS_URL", "redis://redis:6379/1")
     monkeypatch.setenv("RAG_AUTO_MERGE_RATIO_THRESHOLD", "0.75")
     monkeypatch.setenv("RAG_CONTEXT_TOKEN_BUDGET", "1800")
     monkeypatch.setenv("RAG_NEIGHBOR_WINDOW", "2")
@@ -90,7 +92,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert config.reranker_api_key == "secret"
     assert config.reranker_top_n == 4
     assert config.retrieval_strategy == "llamaindex_router"
-    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "custom_llama"
+    assert not hasattr(config, "llamaindex_index_store_dir")
+    assert not hasattr(config, "redis_url")
     assert config.auto_merge_ratio_threshold == 0.75
     assert config.context_token_budget == 1800
     assert config.neighbor_window == 2
@@ -105,24 +108,17 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert not hasattr(config, "hyde_enabled")
 
 
-def test_removed_llamaindex_storage_dir_alias_is_ignored(monkeypatch):
-    monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "ignored_llama")
-
-    config = RAGConfig.from_env()
-
-    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "storage" / "llamaindex"
-
-
-def test_llamaindex_index_store_dir_uses_current_environment_key(monkeypatch):
+def test_removed_llamaindex_index_store_env_keys_are_ignored(monkeypatch):
     monkeypatch.setenv("RAG_LLAMAINDEX_STORAGE_DIR", "ignored_llama")
     monkeypatch.setenv("RAG_LLAMAINDEX_INDEX_STORE_DIR", "new_llama")
 
     config = RAGConfig.from_env()
 
-    assert Path(config.llamaindex_index_store_dir) == PROJECT_ROOT / "new_llama"
+    assert not hasattr(config, "llamaindex_index_store_dir")
+    assert "llamaindex_index_store_dir" not in config.to_dict()
 
 
-def test_service_stack_config_is_postgres_redis_milvus_only(monkeypatch):
+def test_service_stack_config_is_postgres_milvus_only(monkeypatch):
     monkeypatch.setenv("RAG_STORAGE_BACKEND", "local")
     monkeypatch.setenv("RAG_DATABASE_URL", "postgresql://finrag:test@db:5432/finrag")
     monkeypatch.setenv("RAG_REDIS_URL", "redis://redis:6379/1")
@@ -137,8 +133,8 @@ def test_service_stack_config_is_postgres_redis_milvus_only(monkeypatch):
     assert not hasattr(config, "storage_backend")
     assert not hasattr(config, "hybrid_enabled")
     assert not hasattr(config, "ask_streaming")
+    assert not hasattr(config, "redis_url")
     assert config.database_url == "postgresql://finrag:test@db:5432/finrag"
-    assert config.redis_url == "redis://redis:6379/1"
     assert config.milvus_host == "milvus"
     assert config.milvus_port == 19531
     assert config.milvus_collection == "finrag_test_nodes"
@@ -149,10 +145,11 @@ def test_service_stack_config_is_postgres_redis_milvus_only(monkeypatch):
     assert "use_semantic_chunking" not in config.to_dict()
     assert "chunk_size" not in config.to_dict()
     assert "chunk_overlap" not in config.to_dict()
+    assert "redis_url" not in config.to_dict()
     assert "neighbor_window" in config.to_dict()
 
 
-def test_env_example_documents_postgres_redis_milvus_stack():
+def test_env_example_documents_postgres_milvus_stack():
     env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "RAG_VECTOR_BACKEND=" not in env_example
@@ -165,17 +162,17 @@ def test_env_example_documents_postgres_redis_milvus_stack():
     assert "chroma" not in env_example.lower()
     assert "sqlite" not in env_example.lower()
     assert "documents.json" not in env_example.lower()
+    assert "RAG_REDIS_URL=" not in env_example
+    assert "RAG_LLAMAINDEX_INDEX_STORE_DIR=" not in env_example
 
     for key in [
         "RAG_DATABASE_URL",
-        "RAG_REDIS_URL",
         "RAG_MILVUS_HOST",
         "RAG_MILVUS_PORT",
         "RAG_MILVUS_COLLECTION",
         "RAG_RERANKER_ENDPOINT",
         "RAG_RERANKER_API_KEY",
         "RAG_RETRIEVAL_STRATEGY",
-        "RAG_LLAMAINDEX_INDEX_STORE_DIR",
         "RAG_AUTO_MERGE_RATIO_THRESHOLD",
         "RAG_CONTEXT_TOKEN_BUDGET",
         "RAG_NEIGHBOR_WINDOW",

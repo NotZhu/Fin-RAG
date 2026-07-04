@@ -96,7 +96,6 @@ def test_finrag_system_delete_knowledge_base_clears_records_sources_and_runtime(
             )
         ]
     )
-    system.bm25_store.replace_document_chunks("risk", "doc-risk", {"risk-leaf": {"risk": 1}})
     system.manifest_store.save_manifest({"knowledge_base_id": "risk"}, "risk")
     system.kb_runtimes["risk"] = SimpleNamespace(
         scope=system.knowledge_base_scope("risk"),
@@ -111,7 +110,6 @@ def test_finrag_system_delete_knowledge_base_clears_records_sources_and_runtime(
     assert system.document_registry.records["doc-risk"].status == "deleted"
     assert not source_dir.exists()
     assert system.llama_docstore.load_all_nodes("risk") == []
-    assert system.bm25_store.documents == {}
     assert system.manifest_store.load_manifest("risk") is None
     assert "risk" not in system.kb_runtimes
     assert [item["knowledge_base_id"] for item in system.list_knowledge_bases()] == ["finance"]

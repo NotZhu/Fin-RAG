@@ -333,7 +333,7 @@ def format_three_level_tree(source: Path, nodes: Sequence[object]) -> str:
     lines = [
         f"# {source.name}",
         "",
-        "这个文件展示该源文档最终进入 PostgreSQL docstore 的三层节点；Milvus 和 BM25 只使用 L3 leaf。",
+        "这个文件展示该源文档最终进入 PostgreSQL docstore 的三层节点；Milvus dense/BM25 hybrid 索引只使用 L3 leaf。",
         "",
         "```text",
         "L1 root    = 文档根节点",
@@ -515,7 +515,7 @@ def preview_readme(source: Path, out_dir: Path) -> str:
             "- `01_docling_documents.md`：DoclingReader 产出的 LlamaIndex Document。",
             "- `01_docling_document_001.json`：Docling JSON 原文，存在 JSON 文本时生成。",
             "- `02_three_level_tree.md`：root/section/leaf 三层节点长相。",
-            "- `03_leaf_nodes_for_milvus.md`：最终写入 Milvus 和 BM25 的 L3 leaf 节点。",
+            "- `03_leaf_nodes_for_milvus.md`：最终写入 Milvus dense/BM25 hybrid 索引的 L3 leaf 节点。",
             "- `04_relationships.csv`：节点 ID、父节点、根节点和章节页码关系表。",
             "",
         ]

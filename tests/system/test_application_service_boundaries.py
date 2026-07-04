@@ -221,7 +221,6 @@ def test_knowledge_base_initialization_always_passes_document_registry(monkeypat
         ),
         document_registry=registry,
         node_store=object(),
-        bm25_store=None,
         manifest_store=object(),
     )
 
@@ -245,9 +244,9 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
     class FakeIndexConstructionModule:
         def __init__(self, **kwargs):
             captured["collection_name"] = kwargs["collection_name"]
-            captured["sparse_knowledge_base_id"] = kwargs["sparse_embedding_function"].knowledge_base_id
+            captured["has_sparse_embedding_function_arg"] = "sparse_embedding_function" in kwargs
             self.collection_name = kwargs["collection_name"]
-            self.sparse_embedding_function = kwargs["sparse_embedding_function"]
+            self.enable_sparse = kwargs.get("enable_sparse", True)
 
     class FakeGenerationIntegrationModule:
         llm = object()
@@ -275,7 +274,6 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
         config=config,
         document_registry=registry,
         llama_docstore=object(),
-        bm25_store=object(),
         manifest_store=object(),
         kb_runtimes={},
         knowledge_base_scope=lambda knowledge_base_id: KnowledgeBaseScope.from_config(config, knowledge_base_id),
@@ -290,7 +288,7 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
     assert runtime.generation_module.llm is not None
     assert captured == {
         "collection_name": "finrag_leaf_nodes__kb_risk",
-        "sparse_knowledge_base_id": "risk",
+        "has_sparse_embedding_function_arg": False,
     }
     assert system.index_module is runtime.index_module
 
@@ -305,7 +303,7 @@ def test_knowledge_base_initialization_does_not_pass_ocr_config_to_data_module(m
 
     class FakeIndexConstructionModule:
         def __init__(self, **kwargs):
-            self.sparse_embedding_function = kwargs["sparse_embedding_function"]
+            self.enable_sparse = kwargs.get("enable_sparse", True)
 
     class FakeGenerationIntegrationModule:
         def __init__(self, **kwargs):
@@ -321,7 +319,6 @@ def test_knowledge_base_initialization_does_not_pass_ocr_config_to_data_module(m
         ),
         document_registry=registry,
         llama_docstore=object(),
-        bm25_store=None,
         manifest_store=object(),
         kb_runtimes={},
         knowledge_base_scope=lambda knowledge_base_id: KnowledgeBaseScope.from_config(system.config, knowledge_base_id),
@@ -370,7 +367,7 @@ def test_load_leaf_nodes_from_docstore_returns_only_leaf_nodes():
     captured = {}
     system = FinRAGSystem.__new__(FinRAGSystem)
     system.llama_docstore = SimpleNamespace(load_all_nodes=lambda knowledge_base_id: all_nodes)
-    system.index_module = SimpleNamespace(sparse_embedding_function=None)
+    system.index_module = SimpleNamespace()
     system.knowledge_base_scope = lambda knowledge_base_id: SimpleNamespace(
         knowledge_base_id=knowledge_base_id,
         runtime_cache_key=knowledge_base_id,
@@ -482,7 +479,6 @@ def test_rebuild_via_pipeline_stores_hierarchy_nodes_and_indexes_only_leaf_nodes
         storage_context=object(),
     )
     system.index_module = FakeIndexModule()
-    system.bm25_store = None
 
     leaf_nodes = system._rebuild_via_pipeline("kb-finance")
 

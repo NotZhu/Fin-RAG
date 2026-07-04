@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "finrag"
 version = "1.0.0"
-description = "基于 FastAPI、原生 LlamaIndex、Milvus、BM25、Ragas 评估和轻量 Web UI 的金融知识库 RAG 服务"
+description = "基于 FastAPI、原生 LlamaIndex、Milvus 内置 BM25、Ragas 评估和轻量 Web UI 的金融知识库 RAG 服务"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
@@ -13,14 +13,11 @@ dependencies = [
     "llama-index-vector-stores-milvus>=0.5,<1",
     "llama-index-llms-dashscope>=0.3,<1",
     "llama-index-embeddings-dashscope>=0.3,<1",
-    "llama-index-retrievers-bm25>=0.5,<1",
     "llama-index-readers-docling>=0.3,<1",
     "llama-index-node-parser-docling>=0.3,<1",
     "pymilvus>=2.5.10,<2.6",
     "psycopg[binary]>=3.2,<4",
-    "redis>=5.0,<6.0",
     "python-dotenv>=1.0.0",
-    "jieba>=0.42.1",
     "docling>=2,<3",
     "pydantic>=2.10,<2.13",
     "python-multipart>=0.0.9,<1.0.0",
@@ -32,6 +29,7 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9.0",
     "httpx>=0.27,<1.0",
+    "pymupdf>=1.24,<2",
 ]
 eval = [
     "ragas>=0.2,<1",
@@ -41,6 +39,7 @@ eval = [
 dev = [
     "pytest>=8.0,<9.0",
     "httpx>=0.27,<1.0",
+    "pymupdf>=1.24,<2",
     "ruff>=0.15.15",
 ]
 

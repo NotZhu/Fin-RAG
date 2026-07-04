@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from llama_index.embeddings import dashscope as dashscope_module
 from llama_index.core.schema import TextNode
+from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 
 import finrag.indexing.milvus as milvus_module
 from finrag.core.config import PROJECT_ROOT
@@ -15,10 +16,8 @@ from finrag.indexing.milvus import (
     MILVUS_COLLECTION_NAME,
     SPARSE_EMBEDDING_FIELD,
     TEXT_FIELD,
-    BM25SparseEmbeddingFunction,
     IndexConstructionModule,
 )
-from finrag.storage import PostgreSQLBM25StateStore
 
 
 class EmbeddingDimensionProbe:
@@ -147,6 +146,7 @@ def test_manifest_records_docling_node_structure_and_rejects_legacy_chunking_con
 
     manifest = module.build_manifest()
 
+    assert MANIFEST_SCHEMA_VERSION == 3
     assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
     assert manifest["index_type"] == INDEX_TYPE
     assert manifest["node_structure"] == {
@@ -205,12 +205,15 @@ def test_manifest_uses_minimal_registry_managed_shape(tmp_path):
     assert manifest["index_type"] == "LlamaIndexRouter"
     assert manifest["embedding"] == {"model": "text-embedding-v4", "dimensions": 1024}
     assert manifest["milvus"]["collection"] == MILVUS_COLLECTION_NAME
-    assert manifest["milvus"]["sparse_enabled"] is False
+    assert manifest["milvus"]["sparse_enabled"] is True
+    assert manifest["milvus"]["sparse_provider"] == "milvus_builtin_bm25"
+    assert manifest["milvus"]["sparse_index"]["metric_type"] == "BM25"
     assert manifest["milvus"]["rrf_k"] == 60
     assert "document_count" in manifest
     assert "node_count" in manifest
     assert "created_at" not in manifest
     assert "source_fingerprint" not in manifest
+    assert "llamaindex_index_store_dir" not in manifest
 
 
 def test_manifest_matches_ignores_source_directory_changes(tmp_path):
@@ -297,6 +300,7 @@ def test_milvus_vector_store_receives_llamaindex_dense_schema(monkeypatch, tmp_p
     module = IndexConstructionModule(
         model_name="custom-1024",
         embed_model=EmbeddingDimensionProbe(1024),
+        enable_sparse=False,
     )
 
     store = module.init_collection()
@@ -360,26 +364,17 @@ def test_milvus_vector_store_can_initialize_in_worker_thread_without_existing_ev
     assert captured["collection_name"] == MILVUS_COLLECTION_NAME
 
 
-def test_milvus_vector_store_receives_sparse_schema_and_rrf_ranker(monkeypatch, tmp_path):
+def test_milvus_vector_store_receives_builtin_bm25_sparse_schema_and_rrf_ranker(monkeypatch, tmp_path):
     captured = {}
 
     class CapturingFactoryStore:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    class StaticSparseEmbeddingFunction:
-        def encode_queries(self, queries):
-            return [{1: 1.0} for _ in queries]
-
-        def encode_documents(self, documents):
-            return [{1: 1.0} for _ in documents]
-
-    sparse_embedding = StaticSparseEmbeddingFunction()
     monkeypatch.setattr(milvus_module, "_load_milvus_vector_store_class", lambda: CapturingFactoryStore)
     module = IndexConstructionModule(
         model_name="custom-1024",
         embed_model=EmbeddingDimensionProbe(1024),
-        sparse_embedding_function=sparse_embedding,
         rrf_k=83,
     )
 
@@ -388,29 +383,41 @@ def test_milvus_vector_store_receives_sparse_schema_and_rrf_ranker(monkeypatch, 
 
     assert captured["enable_sparse"] is True
     assert captured["sparse_embedding_field"] == SPARSE_EMBEDDING_FIELD
-    assert captured["sparse_embedding_function"] is sparse_embedding
+    assert isinstance(captured["sparse_embedding_function"], BM25BuiltInFunction)
+    assert captured["sparse_embedding_function"].input_field_names == [TEXT_FIELD]
+    assert captured["sparse_embedding_function"].output_field_names == [SPARSE_EMBEDDING_FIELD]
     assert captured["sparse_index_config"]["index_type"] == "SPARSE_INVERTED_INDEX"
-    assert captured["sparse_index_config"]["metric_type"] == "IP"
+    assert captured["sparse_index_config"]["metric_type"] == "BM25"
     assert captured["hybrid_ranker"] == "RRFRanker"
     assert captured["hybrid_ranker_params"] == {"k": 83}
     assert manifest["index_type"] == INDEX_TYPE
     assert manifest["milvus"]["sparse_enabled"] is True
+    assert manifest["milvus"]["sparse_provider"] == "milvus_builtin_bm25"
     assert manifest["milvus"]["rrf_k"] == 83
 
 
-def test_bm25_sparse_embedding_function_uses_persistent_state_for_queries_and_documents(postgres_url):
-    store = PostgreSQLBM25StateStore(postgres_url)
-    store.replace_document_chunks("kb-finance", "doc-a", {"leaf-a": {"风险": 2, "等级": 1}})
-    sparse_embedding = BM25SparseEmbeddingFunction(store, "kb-finance")
+def test_milvus_vector_store_can_disable_builtin_bm25_sparse_schema(monkeypatch):
+    captured = {}
 
-    query_vectors = sparse_embedding.encode_queries(["风险等级"])
-    document_vectors = sparse_embedding.encode_documents(["风险 风险 等级"])
+    class CapturingFactoryStore:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
 
-    assert query_vectors[0]
-    assert document_vectors[0]
-    assert set(query_vectors[0]).issubset(set(document_vectors[0]))
-    assert set(query_vectors[0].values()) == {1.0}
-    assert max(document_vectors[0].values()) != 1.0
+    monkeypatch.setattr(milvus_module, "_load_milvus_vector_store_class", lambda: CapturingFactoryStore)
+    module = IndexConstructionModule(
+        model_name="custom-1024",
+        embed_model=EmbeddingDimensionProbe(1024),
+        enable_sparse=False,
+    )
+
+    module.init_collection()
+    manifest = module.build_manifest()
+
+    assert captured["enable_sparse"] is False
+    assert captured["sparse_embedding_function"] is None
+    assert manifest["milvus"]["sparse_enabled"] is False
+    assert manifest["milvus"]["sparse_provider"] is None
+    assert manifest["milvus"]["sparse_index"] is None
 
 
 def test_project_no_longer_imports_chroma_or_exports_removed_vector_gateway():

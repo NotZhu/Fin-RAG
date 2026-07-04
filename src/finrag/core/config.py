@@ -49,7 +49,6 @@ class RAGConfig:
     upload_dir: str = field(default_factory=lambda: str(PROJECT_ROOT / "storage" / "uploads")) # 上传临时目录
     knowledge_base_id: str = "finance" # 默认资料库 ID
     database_url: str = "postgresql://finrag:finrag@localhost:5432/finrag" # PostgreSQL 连接地址
-    redis_url: str = "redis://localhost:6379/0" # Redis 缓存连接地址
     milvus_host: str = "localhost" # Milvus 服务地址
     milvus_port: int = 19530 # Milvus 服务端口
     milvus_collection: str = "finrag_leaf_nodes" # Milvus 叶子节点 collection 名称
@@ -63,7 +62,6 @@ class RAGConfig:
     retrieval_candidate_k: int = 10 # 检索候选数量
     rrf_k: int = 60 # 倒数排名融合参数
     retrieval_strategy: str = "llamaindex_router" # 查询编排策略
-    llamaindex_index_store_dir: str = field(default_factory=lambda: str(PROJECT_ROOT / "storage" / "llamaindex")) # LlamaIndex index metadata 本地目录
     score_threshold: float = 0.0 # 检索候选分数阈值，低于该分数的候选将被过滤
     reranker_provider: str = "none" # 是否启用重排序模型
     reranker_model: str = "jina-reranker-v2-base-multilingual" # 重排序模型名称
@@ -113,7 +111,6 @@ class RAGConfig:
         self.upload_dir = resolve_project_path(self.upload_dir)
         self.knowledge_base_id = validate_knowledge_base_id(self.knowledge_base_id)
         self.database_url = str(self.database_url).strip()
-        self.redis_url = str(self.redis_url).strip()
         self.milvus_host = str(self.milvus_host).strip()
         self.milvus_port = int(self.milvus_port)
         self.milvus_collection = str(self.milvus_collection).strip()
@@ -122,7 +119,6 @@ class RAGConfig:
         self.retrieval_candidate_k = int(self.retrieval_candidate_k)
         self.rrf_k = int(self.rrf_k)
         self.retrieval_strategy = str(self.retrieval_strategy).strip() or "llamaindex_router"
-        self.llamaindex_index_store_dir = resolve_project_path(self.llamaindex_index_store_dir)
         self.score_threshold = float(self.score_threshold)
         self.reranker_provider = str(self.reranker_provider).strip().lower()
         self.reranker_model = str(self.reranker_model).strip()
@@ -149,7 +145,6 @@ class RAGConfig:
             "upload_dir": "RAG_UPLOAD_DIR", # 上传目录
             "knowledge_base_id": "RAG_KNOWLEDGE_BASE_ID", # 知识库ID
             "database_url": "RAG_DATABASE_URL", # 数据库URL
-            "redis_url": "RAG_REDIS_URL", # Redis URL
             "milvus_host": "RAG_MILVUS_HOST", # Milvus 主机
             "milvus_port": "RAG_MILVUS_PORT", # Milvus 端口
             "milvus_collection": "RAG_MILVUS_COLLECTION", # Milvus 集合
@@ -159,7 +154,6 @@ class RAGConfig:
             "retrieval_candidate_k": "RAG_RETRIEVAL_CANDIDATE_K", # 检索候选数量
             "rrf_k": "RAG_RRF_K", # RRF 策略参数
             "retrieval_strategy": "RAG_RETRIEVAL_STRATEGY", # 检索策略
-            "llamaindex_index_store_dir": "RAG_LLAMAINDEX_INDEX_STORE_DIR", # LlamaIndex 索引存储目录
             "score_threshold": "RAG_SCORE_THRESHOLD", # 分数阈值
             "reranker_provider": "RAG_RERANKER_PROVIDER", # 重排序器提供程序
             "reranker_model": "RAG_RERANKER_MODEL", # 重排序器模型
@@ -192,7 +186,6 @@ class RAGConfig:
             'upload_dir': self.upload_dir,
             'knowledge_base_id': self.knowledge_base_id,
             'database_url': self.database_url,
-            'redis_url': self.redis_url,
             'milvus_host': self.milvus_host,
             'milvus_port': self.milvus_port,
             'milvus_collection': self.milvus_collection,
@@ -202,7 +195,6 @@ class RAGConfig:
             'retrieval_candidate_k': self.retrieval_candidate_k,
             'rrf_k': self.rrf_k,
             'retrieval_strategy': self.retrieval_strategy,
-            'llamaindex_index_store_dir': self.llamaindex_index_store_dir,
             'score_threshold': self.score_threshold,
             'reranker_provider': self.reranker_provider,
             'reranker_model': self.reranker_model,
