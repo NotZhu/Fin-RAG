@@ -2,8 +2,11 @@ from finrag.core.config import PROJECT_ROOT
 
 
 def test_professional_script_and_document_names_are_used():
-    assert (PROJECT_ROOT / "scripts" / "evaluate_retrieval.py").is_file()
-    assert (PROJECT_ROOT / "scripts" / "evaluate_ragas.py").is_file()
+    assert (PROJECT_ROOT / "scripts" / "evaluate_demo_documents.py").is_file()
+    assert (PROJECT_ROOT / "scripts" / "evaluate_demo_documents_ragas.py").is_file()
+    assert (PROJECT_ROOT / "scripts" / "generate_demo_documents.py").is_file()
+    assert not (PROJECT_ROOT / "scripts" / "evaluate_retrieval.py").exists()
+    assert not (PROJECT_ROOT / "scripts" / "evaluate_ragas.py").exists()
     assert not (PROJECT_ROOT / "scripts" / "run_retrieval_eval.py").exists()
     assert not (PROJECT_ROOT / "scripts" / "run_ragas_eval.py").exists()
 

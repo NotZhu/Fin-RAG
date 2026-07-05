@@ -1,0 +1,132 @@
+{
+  "name": "demo-documents",
+  "knowledge_base_id": "demo-documents",
+  "top_k": 5,
+  "quality_gates": {
+    "recall_at_5": 0.8,
+    "mrr": 0.55,
+    "ndcg_at_5": 0.6,
+    "source_keyword_coverage": 0.65,
+    "answer_keyword_coverage": 0.65,
+    "empty_retrieval_rate": {
+      "max": 0.05
+    }
+  },
+  "cases": [
+    {
+      "id": "credit_cash_flow",
+      "query_type": "financial_metric",
+      "question": "华东智造集团 2026H1 经营现金流是多少，同比变化如何？",
+      "expected_answer": "2026H1 经营现金流为 0.8 亿元，同比下降 57.9%，主要原因是核心客户回款周期延长。",
+      "answer_keywords": ["0.8 亿元", "57.9%", "回款周期延长"],
+      "source_keywords": ["经营现金流", "0.8 亿元", "-57.9%"],
+      "relevant_sources": [
+        {"filename": "credit_review_report.pdf", "relevance": 3},
+        {"filename": "erp_financial_snapshot.json", "relevance": 2}
+      ]
+    },
+    {
+      "id": "credit_drawdown_conditions",
+      "query_type": "decision_condition",
+      "question": "新增提款的两个前置条件是什么？",
+      "expected_answer": "新增提款需满足三季度经营现金流转正，且逾期应收款占比降至 5% 以下。",
+      "answer_keywords": ["三季度经营现金流转正", "逾期应收款占比降至 5% 以下"],
+      "source_keywords": ["新增提款需满足", "三季度经营现金流转正", "逾期应收款占比降至 5% 以下"],
+      "relevant_sources": [
+        {"filename": "credit_review_report.pdf", "relevance": 3},
+        {"filename": "erp_financial_snapshot.json", "relevance": 2},
+        {"filename": "board_financing_minutes.md", "relevance": 1}
+      ]
+    },
+    {
+      "id": "receivable_aging",
+      "query_type": "table_lookup",
+      "question": "哪家客户 180 天以上账龄的逾期金额最高，风控动作是什么？",
+      "expected_answer": "合肥智能产线科技有限公司存在 180 天以上账龄，逾期金额 610 万元，风控动作是暂停新增赊销。",
+      "answer_keywords": ["合肥智能产线科技有限公司", "610 万元", "暂停新增赊销"],
+      "source_keywords": ["180 天以上", "610 万元", "暂停新增赊销"],
+      "relevant_sources": [
+        {"filename": "accounts_receivable_aging.xlsx", "relevance": 3},
+        {"filename": "erp_financial_snapshot.json", "relevance": 2}
+      ]
+    },
+    {
+      "id": "procurement_payment_terms",
+      "query_type": "contract_clause",
+      "question": "采购合同的付款条件和违约金条款是什么？",
+      "expected_answer": "付款条件为预付款 20%、验收后支付 50%、稳定运行 60 天后支付 30%；逾期交付超过 10 个工作日，按未交付金额每日 0.05% 支付违约金。",
+      "answer_keywords": ["预付款 20%", "支付 50%", "每日 0.05%"],
+      "source_keywords": ["付款条件", "违约条款", "0.05%"],
+      "relevant_sources": [
+        {"filename": "procurement_contract.docx", "relevance": 3}
+      ]
+    },
+    {
+      "id": "risk_limit_exception",
+      "query_type": "policy_threshold",
+      "question": "新能源装备行业触发上会审批的客户集中度阈值是什么？",
+      "expected_answer": "新能源装备行业客户集中度超过 45% 需上会审批。",
+      "answer_keywords": ["新能源装备", "45%", "上会审批"],
+      "source_keywords": ["新能源装备", "客户集中度超过 45%", "上会审批"],
+      "relevant_sources": [
+        {"filename": "risk_limit_policy.html", "relevance": 3},
+        {"filename": "credit_review_report.pdf", "relevance": 1}
+      ]
+    },
+    {
+      "id": "collateral_ratio",
+      "query_type": "table_lookup",
+      "question": "核心客户应收账款池的抵质押率和权属状态是什么？",
+      "expected_answer": "核心客户应收账款池抵质押率为 50%，权属状态为需月度核验。",
+      "answer_keywords": ["核心客户应收账款池", "50%", "需月度核验"],
+      "source_keywords": ["核心客户应收账款池", "50%", "需月度核验"],
+      "relevant_sources": [
+        {"filename": "collateral_inventory.csv", "relevance": 3}
+      ]
+    },
+    {
+      "id": "aml_due_diligence",
+      "query_type": "procedure",
+      "question": "增强尽调触发原因和需要补充哪些材料？",
+      "expected_answer": "触发原因是新增异地大额回款账户且交易对手集中；需补充实际控制人声明、主要交易对手清单、资金来源证明和董事会授权文件。",
+      "answer_keywords": ["新增异地大额回款账户", "资金来源证明", "董事会授权文件"],
+      "source_keywords": ["触发原因", "资金来源证明", "董事会授权文件"],
+      "relevant_sources": [
+        {"filename": "aml_enhanced_due_diligence.txt", "relevance": 3}
+      ]
+    },
+    {
+      "id": "supplier_esg_action",
+      "query_type": "decision_condition",
+      "question": "供应链 ESG 审查中，采购准入结论对新增订单和逾期整改怎么处理，整改责任矩阵要绑定哪些要素？",
+      "expected_answer": "采购准入结论为维持合格供应商资格，但新增订单需绑定整改节点，逾期未完成整改暂停新增采购订单和预付款申请；整改责任矩阵要求每项整改绑定责任部门、截止日、证据材料和采购动作。",
+      "answer_keywords": ["维持合格供应商资格", "新增订单需绑定整改节点", "暂停新增采购订单", "责任部门"],
+      "source_keywords": ["绑定采购准入", "整改责任矩阵", "绑定责任部门"],
+      "relevant_sources": [
+        {"filename": "supplier_esg_review.pptx", "relevance": 3}
+      ]
+    },
+    {
+      "id": "board_guarantee_limit",
+      "query_type": "governance_rule",
+      "question": "董事会纪要中对外担保余额限制是多少？",
+      "expected_answer": "对外担保余额不得超过净资产的 25%，新增担保需经董事会三分之二以上通过。",
+      "answer_keywords": ["净资产的 25%", "三分之二以上", "新增担保"],
+      "source_keywords": ["对外担保余额", "25%", "三分之二以上"],
+      "relevant_sources": [
+        {"filename": "board_financing_minutes.md", "relevance": 3}
+      ]
+    },
+    {
+      "id": "bank_statement_anomaly",
+      "query_type": "ocr_evidence",
+      "question": "银行流水扫描件中的异常备注是什么？",
+      "expected_answer": "异常备注为同日多笔拆分回款，需与销售合同和发票核对。",
+      "answer_keywords": ["同日多笔拆分回款", "销售合同", "发票核对"],
+      "source_keywords": ["异常备注", "同日多笔拆分回款", "发票核对"],
+      "relevant_sources": [
+        {"filename": "bank_statement_scan.png", "relevance": 3}
+      ]
+    }
+  ]
+}

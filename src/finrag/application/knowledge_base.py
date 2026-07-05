@@ -58,6 +58,8 @@ class KnowledgeBaseService:
         # 初始化索引构造模块
         index_module = IndexConstructionModule(
             model_name=system.config.embedding_model, # 嵌入模型名称
+            embedding_base_url=getattr(system.config, "embedding_base_url", ""), # OpenAI 兼容 embedding endpoint
+            embedding_api_key=getattr(system.config, "embedding_api_key", ""), # OpenAI 兼容 embedding API key
             collection_name=scope.collection_name, # Milvus 集合名称
             milvus_host=system.config.milvus_host, # Milvus 主机地址
             milvus_port=system.config.milvus_port, # Milvus 端口号

@@ -531,7 +531,7 @@ class QAPipelineService:
         text = f"{error.__class__.__name__}: {error}".lower()
         if "milvus" in text:
             return "milvus_unavailable"
-        if "embedding" in text or "dashscope_api_key" in text:
+        if "embedding" in text:
             return "embedding_unavailable"
         return "knowledge_unavailable"
 
@@ -630,7 +630,7 @@ class QAPipelineService:
         }
 
     @staticmethod
-    def build_snippet(content: str, max_length: int = 200) -> str:
+    def build_snippet(content: str, max_length: int = 800) -> str:
         """
         从内容中提取摘要片段
         Args:

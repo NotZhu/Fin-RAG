@@ -98,6 +98,16 @@ def test_finrag_system_does_not_expose_removed_private_forwarders():
     assert all(not hasattr(FinRAGSystem, name) for name in removed_forwarders)
 
 
+def test_qa_source_snippet_keeps_long_table_evidence_by_default():
+    content = "表格开始 " + ("前置字段 " * 45) + "610 万元 暂停新增赊销 " + ("后续字段 " * 120)
+
+    snippet = QAPipelineService.build_snippet(content)
+
+    assert "610 万元" in snippet
+    assert "暂停新增赊销" in snippet
+    assert len(snippet) <= 800
+
+
 def test_finrag_system_delegates_document_lifecycle_entrypoints(tmp_path):
     system = FinRAGSystem(RAGConfig(data_path=str(tmp_path)))
 
@@ -245,6 +255,8 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
         def __init__(self, **kwargs):
             captured["collection_name"] = kwargs["collection_name"]
             captured["has_sparse_embedding_function_arg"] = "sparse_embedding_function" in kwargs
+            captured["embedding_base_url"] = kwargs["embedding_base_url"]
+            captured["embedding_api_key"] = kwargs["embedding_api_key"]
             self.collection_name = kwargs["collection_name"]
             self.enable_sparse = kwargs.get("enable_sparse", True)
 
@@ -262,6 +274,8 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
         data_path=str(tmp_path),
         knowledge_base_id="finance",
         embedding_model="text-embedding-v4",
+        embedding_base_url="https://api.siliconflow.cn/v1",
+        embedding_api_key="embed-secret",
         milvus_collection="finrag_leaf_nodes",
         milvus_host="localhost",
         milvus_port=19530,
@@ -289,6 +303,8 @@ def test_knowledge_base_initialization_creates_scoped_runtime(monkeypatch, tmp_p
     assert captured == {
         "collection_name": "finrag_leaf_nodes__kb_risk",
         "has_sparse_embedding_function_arg": False,
+        "embedding_base_url": "https://api.siliconflow.cn/v1",
+        "embedding_api_key": "embed-secret",
     }
     assert system.index_module is runtime.index_module
 

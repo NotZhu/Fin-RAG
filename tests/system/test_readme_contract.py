@@ -23,8 +23,12 @@ def test_readme_is_github_style_and_current_state_only():
     assert "docker compose up -d postgres etcd minio milvus" in readme
     assert "finrag rebuild --knowledge-base-id finance" in readme
     assert "uvicorn finrag.api:app --host 127.0.0.1 --port 8000" in readme
-    assert "python -m scripts.evaluate_retrieval --json" in readme
-    assert "python -m scripts.evaluate_ragas datasets/eval/finance_ragas_eval_set.jsonl --json" in readme
+    assert "python -m scripts.generate_demo_documents --clean" in readme
+    assert "python -m scripts.evaluate_demo_documents --json" in readme
+    assert "python -m scripts.evaluate_demo_documents_ragas --dry-run" in readme
+    assert "datasets/eval/demo_documents_suite.json" in readme
+    assert "python -m scripts.evaluate_retrieval" not in readme
+    assert "python -m scripts.evaluate_ragas" not in readme
     assert "`DoclingNodeParser`" in readme
     assert "`HierarchyBuilder`" in readme
     assert "none / jina" in readme
@@ -42,3 +46,12 @@ def test_readme_is_github_style_and_current_state_only():
 
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "sentence-transformers" not in pyproject
+    assert "ragas" in pyproject
+    assert "langchain-openai" in pyproject
+
+    env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "RAGAS_EVAL_ENABLED=false" in env_example
+    assert "RAGAS_LLM_MODEL=qwen3.7-max" in env_example
+    assert "RAGAS_EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1" in env_example
+    assert "RAGAS_EMBEDDING_MODEL=BAAI/bge-m3" in env_example
+    assert "RAGAS_ANSWER_RELEVANCY_STRICTNESS=1" in env_example

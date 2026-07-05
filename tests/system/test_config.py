@@ -18,11 +18,14 @@ def test_default_paths_are_absolute_and_finance_oriented():
     assert config.reranker_endpoint == ""
     assert config.reranker_api_key == ""
     assert config.retrieval_strategy == "llamaindex_router"
+    assert config.top_k == 5
+    assert config.retrieval_candidate_k == 12
     assert not hasattr(config, "llamaindex_index_store_dir")
     assert not hasattr(config, "redis_url")
-    assert config.auto_merge_ratio_threshold == 0.5
-    assert config.context_token_budget == 2400
-    assert config.neighbor_window == 1
+    assert config.score_threshold == 0.01
+    assert config.auto_merge_ratio_threshold == 0.45
+    assert config.context_token_budget == 3000
+    assert config.neighbor_window == 0
     assert Path(config.upload_dir) == PROJECT_ROOT / "storage" / "uploads"
     assert config.max_upload_bytes == 20 * 1024 * 1024
     assert not hasattr(config, "ocr_enabled")
@@ -68,6 +71,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     monkeypatch.setenv("RAG_RERANKER_ENDPOINT", "https://api.jina.ai/v1/rerank")
     monkeypatch.setenv("RAG_RERANKER_API_KEY", "secret")
     monkeypatch.setenv("RAG_RERANKER_TOP_N", "4")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "embed-secret")
     monkeypatch.setenv("RAG_RETRIEVAL_STRATEGY", "llamaindex_router")
     monkeypatch.setenv("RAG_LLAMAINDEX_INDEX_STORE_DIR", "custom_llama")
     monkeypatch.setenv("RAG_REDIS_URL", "redis://redis:6379/1")
@@ -91,6 +96,8 @@ def test_config_can_be_created_from_environment(monkeypatch):
     assert config.reranker_endpoint == "https://api.jina.ai/v1/rerank"
     assert config.reranker_api_key == "secret"
     assert config.reranker_top_n == 4
+    assert config.embedding_base_url == "https://api.siliconflow.cn/v1"
+    assert config.embedding_api_key == "embed-secret"
     assert config.retrieval_strategy == "llamaindex_router"
     assert not hasattr(config, "llamaindex_index_store_dir")
     assert not hasattr(config, "redis_url")
@@ -170,9 +177,14 @@ def test_env_example_documents_postgres_milvus_stack():
         "RAG_MILVUS_HOST",
         "RAG_MILVUS_PORT",
         "RAG_MILVUS_COLLECTION",
+        "EMBEDDING_BASE_URL",
+        "EMBEDDING_API_KEY",
+        "RAG_EMBEDDING_MODEL",
+        "RAG_LLM_MODEL",
         "RAG_RERANKER_ENDPOINT",
         "RAG_RERANKER_API_KEY",
         "RAG_RETRIEVAL_STRATEGY",
+        "RAG_SCORE_THRESHOLD",
         "RAG_AUTO_MERGE_RATIO_THRESHOLD",
         "RAG_CONTEXT_TOKEN_BUDGET",
         "RAG_NEIGHBOR_WINDOW",
@@ -180,6 +192,12 @@ def test_env_example_documents_postgres_milvus_stack():
         "RAG_MAX_UPLOAD_BYTES",
     ]:
         assert f"{key}=" in env_example
+    assert "RAG_TOP_K=5" in env_example
+    assert "RAG_RETRIEVAL_CANDIDATE_K=12" in env_example
+    assert "RAG_SCORE_THRESHOLD=0.01" in env_example
+    assert "RAG_AUTO_MERGE_RATIO_THRESHOLD=0.45" in env_example
+    assert "RAG_CONTEXT_TOKEN_BUDGET=3000" in env_example
+    assert "RAG_NEIGHBOR_WINDOW=0" in env_example
     assert "RAG_OCR_ENABLED=" not in env_example
     assert "RAG_OCR_LANG=" not in env_example
     assert "RAG_TESSERACT_CMD=" not in env_example

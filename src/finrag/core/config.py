@@ -54,23 +54,25 @@ class RAGConfig:
     milvus_collection: str = "finrag_leaf_nodes" # Milvus 叶子节点 collection 名称
 
     # 模型配置
-    embedding_model: str = "text-embedding-v4" # Embedding 模型名称
-    llm_model: str = "qwen-max" # LLM 生成模型名称
+    embedding_model: str = "BAAI/bge-m3" # Embedding 模型名称
+    embedding_base_url: str = "" # OpenAI 兼容 embedding endpoint
+    embedding_api_key: str = "" # OpenAI 兼容 embedding API key
+    llm_model: str = "qwen3.7-max" # LLM 生成模型名称
 
     # 检索配置
-    top_k: int = 3 # 最终返回给 LLM 的证据块数量
-    retrieval_candidate_k: int = 10 # 检索候选数量
+    top_k: int = 5 # 最终返回给 LLM 的证据块数量
+    retrieval_candidate_k: int = 12 # 检索候选数量
     rrf_k: int = 60 # 倒数排名融合参数
     retrieval_strategy: str = "llamaindex_router" # 查询编排策略
-    score_threshold: float = 0.0 # 检索候选分数阈值，低于该分数的候选将被过滤
+    score_threshold: float = 0.01 # 检索候选分数阈值，低于该分数的候选将被过滤
     reranker_provider: str = "none" # 是否启用重排序模型
     reranker_model: str = "jina-reranker-v2-base-multilingual" # 重排序模型名称
     reranker_endpoint: str = "" # Jina 兼容 rerank endpoint
     reranker_api_key: str = "" # Jina 兼容 rerank API key
     reranker_top_n: int = 3 # 重排序后最终返回给 LLM 的证据块数量
-    auto_merge_ratio_threshold: float = 0.5 # 自动合并检索器阈值
-    context_token_budget: int = 2400 # 上下文 token 硬预算
-    neighbor_window: int = 1 # 前后相邻节点扩展数量
+    auto_merge_ratio_threshold: float = 0.45 # 自动合并检索器阈值
+    context_token_budget: int = 3000 # 上下文 token 硬预算
+    neighbor_window: int = 0 # 前后相邻节点扩展数量
     max_upload_bytes: int = 20 * 1024 * 1024 # 单个上传文件最大字节数
 
     # 生成配置
@@ -114,6 +116,10 @@ class RAGConfig:
         self.milvus_host = str(self.milvus_host).strip()
         self.milvus_port = int(self.milvus_port)
         self.milvus_collection = str(self.milvus_collection).strip()
+        self.embedding_model = str(self.embedding_model).strip()
+        self.embedding_base_url = str(self.embedding_base_url).strip()
+        self.embedding_api_key = str(self.embedding_api_key).strip()
+        self.llm_model = str(self.llm_model).strip()
         # 类型转换，将从环境变量中获取的字符串转换为整数或浮点数
         self.top_k = int(self.top_k)
         self.retrieval_candidate_k = int(self.retrieval_candidate_k)
@@ -149,6 +155,8 @@ class RAGConfig:
             "milvus_port": "RAG_MILVUS_PORT", # Milvus 端口
             "milvus_collection": "RAG_MILVUS_COLLECTION", # Milvus 集合
             "embedding_model": "RAG_EMBEDDING_MODEL", # 嵌入模型
+            "embedding_base_url": "EMBEDDING_BASE_URL", # OpenAI 兼容 embedding endpoint
+            "embedding_api_key": "EMBEDDING_API_KEY", # OpenAI 兼容 embedding API key
             "llm_model": "RAG_LLM_MODEL", # LLM 模型
             "top_k": "RAG_TOP_K", # 检索结果数量
             "retrieval_candidate_k": "RAG_RETRIEVAL_CANDIDATE_K", # 检索候选数量
@@ -190,6 +198,8 @@ class RAGConfig:
             'milvus_port': self.milvus_port,
             'milvus_collection': self.milvus_collection,
             'embedding_model': self.embedding_model,
+            'embedding_base_url': self.embedding_base_url,
+            'embedding_api_key': self.embedding_api_key,
             'llm_model': self.llm_model,
             'top_k': self.top_k,
             'retrieval_candidate_k': self.retrieval_candidate_k,

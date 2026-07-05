@@ -1,4 +1,4 @@
-"""预览 Docling 解析结果和每篇源文档的三层节点。"""
+"""预览 Docling 解析结果和每篇源文档的三层节点"""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from typing import Any, Iterable, Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 DEFAULT_DEMO_DIR_NAME = "demo-documents"
-LEGACY_DEMO_PDF_NAME = "finrag_docling_demo.pdf"
 
 
 @dataclass
@@ -248,10 +247,7 @@ def resolve_source(source: Path | None) -> Path:
     """解析默认源路径。"""
     if source is not None:
         return source.resolve()
-    demo_dir = PROJECT_ROOT / "output" / DEFAULT_DEMO_DIR_NAME
-    if demo_dir.exists():
-        return demo_dir.resolve()
-    return (PROJECT_ROOT / "output" / "pdf" / LEGACY_DEMO_PDF_NAME).resolve()
+    return (PROJECT_ROOT / "output" / DEFAULT_DEMO_DIR_NAME).resolve()
 
 
 def resolve_data_root(source: Path, explicit_data_root: Path | None) -> Path:

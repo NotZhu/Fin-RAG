@@ -1,8 +1,8 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import json
 
 import pytest
-from llama_index.embeddings import dashscope as dashscope_module
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 
@@ -52,7 +52,7 @@ def test_milvus_dense_index_uses_llamaindex_milvus_vector_store_by_default(monke
 
     monkeypatch.setattr(milvus_module, "_load_milvus_vector_store_class", lambda: RecordingMilvusVectorStore)
     module = IndexConstructionModule(
-        model_name="text-embedding-v4",
+        model_name="BAAI/bge-m3",
         embed_model=EmbeddingDimensionProbe(1024),
     )
 
@@ -66,65 +66,70 @@ def test_milvus_dense_index_uses_llamaindex_milvus_vector_store_by_default(monke
     assert captured["dim"] == 1024
 
 
-def test_dashscope_text_embedding_v4_uses_known_default_dimension(monkeypatch):
+def test_embedding_requires_endpoint_and_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("EMBEDDING_BASE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="EMBEDDING_BASE_URL"):
+        IndexConstructionModule(model_name="BAAI/bge-m3")
+
+
+def test_openai_compatible_embedding_uses_configured_endpoint(monkeypatch):
     captured = {}
 
-    class RecordingMilvusVectorStore:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
+    class FakeResponse:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr(milvus_module, "_load_milvus_vector_store_class", lambda: RecordingMilvusVectorStore)
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(milvus_module.urlrequest, "urlopen", fake_urlopen)
+
     module = IndexConstructionModule(
-        model_name="text-embedding-v4",
-        embed_model=EmbeddingWithoutDimensionProbe(),
+        model_name="BAAI/bge-m3",
+        embedding_base_url="https://api.siliconflow.cn/v1",
+        embedding_api_key="sf-key",
     )
 
-    module.init_collection()
-
     assert module.embedding_dimensions == 1024
-    assert captured["dim"] == 1024
+    assert module.embed_model.get_text_embedding("现金流覆盖率") == [0.1, 0.2, 0.3]
+    assert captured["url"] == "https://api.siliconflow.cn/v1/embeddings"
+    assert captured["headers"]["Authorization"] == "Bearer sf-key"
+    assert captured["payload"] == {"model": "BAAI/bge-m3", "input": ["现金流覆盖率"]}
+    assert captured["timeout"] == 60.0
 
 
-def test_embedding_requires_dashscope_key(monkeypatch, tmp_path):
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+def test_openai_compatible_embedding_requires_endpoint_and_key(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_BASE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
 
-    with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
-        IndexConstructionModule(model_name="text-embedding-v4")
-
-
-def test_dashscope_embedding_uses_api_safe_batch_size(monkeypatch):
-    captured = {}
-
-    class RecordingDashScopeEmbedding:
-        def __init__(self, model_name, api_key, embed_batch_size=25):
-            captured["model_name"] = model_name
-            captured["api_key"] = api_key
-            captured["embed_batch_size"] = embed_batch_size
-            self.embed_dim = 1024
-
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    monkeypatch.setattr(dashscope_module, "DashScopeEmbedding", RecordingDashScopeEmbedding)
-
-    IndexConstructionModule(model_name="text-embedding-v4")
-
-    assert captured == {
-        "model_name": "text-embedding-v4",
-        "api_key": "test-key",
-        "embed_batch_size": 10,
-    }
+    with pytest.raises(RuntimeError, match="EMBEDDING_BASE_URL"):
+        IndexConstructionModule(model_name="BAAI/bge-m3")
 
 
 def test_index_module_rejects_removed_local_vector_paths(monkeypatch):
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("EMBEDDING_BASE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
     removed_model = "mo" + "ck"
 
-    with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
+    with pytest.raises(RuntimeError, match="EMBEDDING_BASE_URL"):
         IndexConstructionModule(model_name=removed_model)
 
     removed_embedding_option = "use_" + "mo" + "ck_embedding"
     with pytest.raises(TypeError, match=removed_embedding_option):
         IndexConstructionModule(
-            model_name="text-embedding-v4",
+            model_name="BAAI/bge-m3",
             embed_model=EmbeddingDimensionProbe(1024),
             **{removed_embedding_option: True},
         )
@@ -132,7 +137,7 @@ def test_index_module_rejects_removed_local_vector_paths(monkeypatch):
     removed_milvus_option = "use_" + "fa" + "ke_milvus"
     with pytest.raises(TypeError, match=removed_milvus_option):
         IndexConstructionModule(
-            model_name="text-embedding-v4",
+            model_name="BAAI/bge-m3",
             embed_model=EmbeddingDimensionProbe(1024),
             **{removed_milvus_option: True},
         )
@@ -140,7 +145,7 @@ def test_index_module_rejects_removed_local_vector_paths(monkeypatch):
 
 def test_manifest_records_docling_node_structure_and_rejects_legacy_chunking_config(tmp_path):
     module = IndexConstructionModule(
-        model_name="text-embedding-v4",
+        model_name="BAAI/bge-m3",
         embed_model=EmbeddingDimensionProbe(1024),
     )
 
@@ -180,7 +185,7 @@ def test_delete_vectors_by_document_id_uses_document_metadata_filter():
 
     vector_store = RecordingVectorStore()
     module = IndexConstructionModule(
-        model_name="text-embedding-v4",
+        model_name="BAAI/bge-m3",
         embed_model=EmbeddingDimensionProbe(1024),
     )
     module.vector_store = vector_store

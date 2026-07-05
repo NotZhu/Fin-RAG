@@ -18,6 +18,7 @@ from finrag.ingestion.parsers import SUPPORTED_SUFFIXES, is_path_within, load_do
 
 logger = logging.getLogger(__name__)
 
+
 class DataPreparationModule:
     """负责从数据源加载文档、构建层级节点、生成检索索引和构造生成上下文窗口的模块"""
 

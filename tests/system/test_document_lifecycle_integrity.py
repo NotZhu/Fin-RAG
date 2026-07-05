@@ -8,7 +8,7 @@ from finrag.application.system import FinRAGSystem
 
 pytestmark = pytest.mark.skipif(
     os.getenv("FINRAG_RUN_INTEGRATION") != "1",
-    reason="需要运行中的 Milvus 和 DashScope embedding",
+    reason="需要运行中的 Milvus 和 OpenAI 兼容 embedding 服务",
 )
 
 

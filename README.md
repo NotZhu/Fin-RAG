@@ -21,7 +21,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 ## Highlights
 
 - **可审计文档生命周期**：`DocumentLifecycleService` 负责安全文件名、`content_hash` 去重、`.pending` 暂存、源文件提升、删除和重建索引；文档注册表对外暴露 `document_id`、`status`、`chunk_count`、`upload_time` 和错误信息。
-- **原生 Milvus 检索**：`MilvusNativeHybridRetriever` 优先使用 Milvus `HYBRID` 查询模式，dense embedding 来自 DashScope `text-embedding-v4`，sparse embedding 由 Milvus 内置 BM25 function 生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选；当 collection 没有 sparse schema 时自动降级为 dense-only 检索。
+- **原生 Milvus 检索**：`MilvusNativeHybridRetriever` 优先使用 Milvus `HYBRID` 查询模式，dense embedding 来自 OpenAI-compatible embedding endpoint（默认 `BAAI/bge-m3`），sparse embedding 由 Milvus 内置 BM25 function 生成，并通过 `RRFRanker(k=RAG_RRF_K)` 融合候选；当 collection 没有 sparse schema 时自动降级为 dense-only 检索。
 - **层级证据窗口**：`DoclingNodeParser` 生成结构化 leaf nodes，`HierarchyBuilder` 构建 root / section / leaf 节点；Milvus 召回 leaf vectors 后，`AutoMergingRetriever(simple_ratio_thresh=...)` 从 PostgreSQL docstore 回源父级节点，结合相邻节点和句子边界预算控制生成上下文。
 - **路由化问答编排**：`llamaindex_router` 将问题路由到知识库问答或普通 LLM；知识库内部按 HyDE、step-back、auto-merge 查询工具处理不同问题形态。
 - **可观测生成接口**：`/knowledge-bases/{knowledge_base_id}/ask` 以 SSE 输出 `analysis`、`route`、`source`、`token`、`done`、`error` 事件；`return_trace=true` 时在最终 `done.response.trace.pipeline_steps` 返回问答完成后的完整检索链路快照、Milvus 检索元信息、auto-merge 配置、来源节点和阶段耗时。
@@ -37,7 +37,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 | 检索增强     | 基于 Milvus native hybrid 或 dense-only 检索、资料库过滤、候选融合、Auto Merge、相邻节点扩展、分数过滤和可选 Jina rerank 构建证据集                           |
 | 可信生成     | Grounded prompt 约束模型基于证据回答，资料不足时明确拒答；最终响应以结构化 `sources` 暴露文件名、页码、分数和片段                        |
 | 可观测性     | SSE 事件流覆盖分析、路由、来源、token、完成与错误；最终 trace 记录 route、pipeline steps、retrieved/evidence nodes 和耗时        |
-| 质量评估     | 提供 hit@k、MRR、keyword coverage 与 Ragas 指标，评估召回命中、排序质量、上下文质量和回答忠实性                                            |
+| 质量评估     | 提供 Recall@k、MRR、NDCG@k、关键词覆盖、空召回率和延迟指标，评估召回、排序、证据覆盖和端到端问答质量                                            |
 | Web 工作台   | React/Vite 工作台提供 FinRAG 资料库状态、拖拽上传与确认索引、流式问答、Markdown 回答渲染、来源引用、最终检索链路快照、文档分页、删除和重建索引 |
 
 ## Architecture
@@ -112,7 +112,7 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 7. **Routing & Grounded Generation**
    顶层 router 将问题分流到 `knowledge -> RAG` 或 `general -> 普通 LLM`。知识库 router 可使用 HyDE、step-back、auto-merge 查询工具；Grounded prompt 要求模型依据证据回答，资料不足时说明无法从资料中确认，API 以结构化 `sources` 返回来源编号、文件名、页码、分数和片段。
 8. **Streaming Trace & Evaluation**
-   `/knowledge-bases/{knowledge_base_id}/ask` 返回 SSE 流，事件包括 `analysis`、`route`、`source`、`token`、`done` 和 `error`。回答 token 通过 SSE 持续输出，完整 `pipeline_steps` 在最终 `done.response.trace` 中返回，前端据此展示问答完成后的链路快照。`return_trace=true` 时，trace 包含 route type、retrieval params、`pipeline_steps`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、retrieved nodes、evidence nodes、auto-merge、reranker、事件列表和阶段耗时。检索评估脚本评估 `milvus_hybrid_retriever`，Ragas 脚本评估生成答案与上下文质量。
+   `/knowledge-bases/{knowledge_base_id}/ask` 返回 SSE 流，事件包括 `analysis`、`route`、`source`、`token`、`done` 和 `error`。回答 token 通过 SSE 持续输出，完整 `pipeline_steps` 在最终 `done.response.trace` 中返回，前端据此展示问答完成后的链路快照。`return_trace=true` 时，trace 包含 route type、retrieval params、`pipeline_steps`、`hybrid_provider`、`hybrid_mode`、`hybrid_ranker`、retrieved nodes、evidence nodes、auto-merge、reranker、事件列表和阶段耗时。`demo-documents` 评测 suite 以 RAG 三元组驱动确定性质量门禁。
 
 ## Runtime Stack
 
@@ -121,9 +121,9 @@ FinRAG 是一个面向金融制度、合规流程、产品材料和投研摘要�
 - LlamaIndex 原生 Document / TextNode / NodeWithScore / RetrieverQueryEngine / RouterQueryEngine
 - Milvus dense 向量存储、内置 BM25 sparse 向量存储与 LlamaIndex VectorStoreIndex
 - Docling 统一文档理解与 Markdown/JSON 解析
-- Qwen / DashScope LlamaIndex 原生集成
+- Qwen / DashScope OpenAI-compatible chat completions
 - PostgreSQL 文档、节点和索引 manifest 存储
-- Ragas（`eval` extra）
+- 确定性 RAG 评测 suite 与 JSON 报告
 - React 18、Vite 5、TypeScript、Vitest
 
 ## Project Structure
@@ -137,10 +137,10 @@ src/finrag/storage/       PostgreSQL stores、DB helper、protocols
 src/finrag/ingestion/     文档记录、元数据工具、多格式解析和 load documents
 src/finrag/indexing/      层级节点、auto merge、Milvus dense/BM25 hybrid index
 src/finrag/retrieval/     llamaindex_router / native hybrid / rerank
-src/finrag/generation/    DashScope LLM 初始化
+src/finrag/generation/    DashScope OpenAI-compatible LLM 初始化
 data/documents/           多知识库样例源文件与上传后托管的源文件
-datasets/eval/            检索与生成评估集
-scripts/                  检索评估、Ragas 评估与维护脚本
+datasets/eval/            demo-documents 评测 suite
+scripts/                  demo 文档生成、RAG 评测与维护脚本
 tests/                    后端、检索、生成、API 与前端契约测试
 storage/uploads/          运行时临时上传文件；索引状态保存在 PostgreSQL/Milvus
 ```
@@ -164,18 +164,23 @@ uv sync --group dev
 Copy-Item .env.example .env
 ```
 
-`.env.example` 默认使用 DashScope embedding 模型，并关闭 rerank：
+`.env.example` 默认使用 OpenAI-compatible embedding endpoint，并关闭 rerank：
 
 ```env
-RAG_EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+EMBEDDING_API_KEY=your_embedding_key
+RAG_EMBEDDING_MODEL=BAAI/bge-m3
 RAG_RERANKER_PROVIDER=none
 ```
 
 启动索引前需要在 `.env` 中配置 API key：
 
 ```env
-DASHSCOPE_API_KEY=your_api_key
-RAG_EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+EMBEDDING_API_KEY=your_embedding_key
+DASHSCOPE_API_KEY=your_llm_key
+RAG_EMBEDDING_MODEL=BAAI/bge-m3
+RAG_LLM_MODEL=qwen3.7-max
 RAG_DATA_PATH=data/documents
 RAG_KNOWLEDGE_BASE_ID=finance
 ```
@@ -188,7 +193,7 @@ uv run python -m finrag.cli rebuild --knowledge-base-id finance
 uv run python -m uvicorn finrag.api:app --host 127.0.0.1 --port 8000
 ```
 
-索引初始化需要 `DASHSCOPE_API_KEY`。需要二阶段精排时配置 Jina-compatible HTTP rerank：
+索引初始化需要 `EMBEDDING_API_KEY`；生成问答需要 `DASHSCOPE_API_KEY`。需要二阶段精排时配置 Jina-compatible HTTP rerank：
 
 ```env
 RAG_RERANKER_PROVIDER=jina
@@ -317,8 +322,8 @@ data: {"response":{...},"final_decision":"generate"}
           "hybrid_provider": "milvus",
           "hybrid_mode": "native_dense_sparse",
           "hybrid_ranker": "RRFRanker",
-          "candidate_k": 10,
-          "top_k": 3,
+          "candidate_k": 12,
+          "top_k": 5,
           "rrf_k": 60
         }
       },
@@ -330,11 +335,11 @@ data: {"response":{...},"final_decision":"generate"}
         "status": "complete",
         "duration_ms": null,
         "meta": {
-          "score_threshold": 0.0,
+          "score_threshold": 0.01,
           "reranker_provider": "none",
           "reranker_top_n": 3,
-          "context_token_budget": 2400,
-          "prev_next": 1
+          "context_token_budget": 3000,
+          "prev_next": 0
         }
       },
       {
@@ -345,7 +350,7 @@ data: {"response":{...},"final_decision":"generate"}
         "status": "complete",
         "duration_ms": null,
         "meta": {
-          "simple_ratio_thresh": 0.5
+          "simple_ratio_thresh": 0.45
         }
       },
       {
@@ -407,29 +412,72 @@ data: {"response":{...},"final_decision":"generate"}
 
 ## Evaluation
 
-检索评估：
+生成 demo-documents 业务资料：
 
 ```bash
-python -m scripts.evaluate_retrieval --json
+python -m scripts.generate_demo_documents --clean
 ```
 
-Ragas 评估：
+运行完整评测：
 
 ```bash
-python -m pip install -e ".[eval]"
-python -m scripts.evaluate_ragas datasets/eval/finance_ragas_eval_set.jsonl --json
+python -m scripts.evaluate_demo_documents --json
 ```
 
-检索评估关注“有没有召回正确文档”和排序质量；Ragas 评估关注生成答案是否忠实于上下文、回答是否相关、证据片段是否充分。Ragas 脚本支持读取已生成的 `answer/contexts/ground_truth` JSONL，也可以通过 `--generate` 调用 FinRAG 自动生成回答和上下文后再评估。
+只运行指定阶段：
 
-建议评估维度：
+```bash
+python -m scripts.evaluate_demo_documents --stage retrieval --json
+python -m scripts.evaluate_demo_documents --stage qa --json
+```
 
-- `hit@1 / hit@k`：目标文档是否被召回
+Ragas 语义评测作为可选诊断层，默认读取完整 QA 报告并转换为 `user_input / response / retrieved_contexts / reference` 样本。预览命令用于检查样本映射：
+
+```bash
+python -m scripts.evaluate_demo_documents_ragas --dry-run
+```
+
+安装评测扩展后运行 Ragas：
+
+```bash
+uv sync --extra eval
+python -m scripts.evaluate_demo_documents_ragas --from-report reports/eval/demo-documents/latest.json --report-output reports/eval/demo-documents/ragas-latest.json
+```
+
+正式运行 Ragas 前需要同时配置评测 LLM 和评测 embedding；其中 `answer_relevancy` 会调用 embedding 模型，`RAGAS_ANSWER_RELEVANCY_STRICTNESS=1` 控制单题采样次数：
+
+```env
+RAGAS_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+RAGAS_API_KEY=your_llm_key
+RAGAS_LLM_MODEL=qwen3.7-max
+RAGAS_EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+RAGAS_EMBEDDING_API_KEY=your_embedding_key
+RAGAS_EMBEDDING_MODEL=BAAI/bge-m3
+RAGAS_ANSWER_RELEVANCY_STRICTNESS=1
+RAGAS_METRICS=faithfulness,answer_relevancy,context_recall
+```
+
+脚本会自动读取项目根目录 `.env`，命令行中已经设置的环境变量优先生效。正式 Ragas 运行没有产生任何有效指标时返回非 0 退出码，并保留已有 `ragas-latest.json`。
+
+评测 suite 位于 `datasets/eval/demo_documents_suite.json`，业务资料位于 `output/demo-documents`。suite 保存问题、期望答案、相关来源、相关性等级、答案关键词和证据关键词；业务资料目录只保存可入库文档，避免把答案钥匙作为知识库内容索引。
+
+demo-documents 资料覆盖授信审查报告、应收账款账龄、采购合同、风险限额政策、押品清单、反洗钱增强尽调、ERP 财务快照、供应链 ESG 审查、董事会纪要和银行流水扫描件。文件格式包括 PDF、XLSX、DOCX、HTML、CSV、TXT、JSON、PPTX、Markdown 和 PNG。
+
+核心质量门禁：
+
+- `Recall@k`：相关来源召回比例
 - `MRR`：目标文档排序质量
-- `keyword coverage`：关键词覆盖程度
-- `faithfulness`：回答是否忠实于证据
-- `answer relevancy`：回答与问题的相关性
-- `context precision / recall`：上下文质量
+- `NDCG@k`：带相关性等级的排序质量
+- `source_keyword_coverage`：召回证据关键词覆盖程度
+- `answer_keyword_coverage`：答案关键词覆盖程度
+- `empty_retrieval_rate`：空召回比例
+
+诊断指标：
+
+- `Precision@k`：召回结果中相关来源比例
+- `hit@k`：至少命中一个相关来源的比例
+- `avg_latency_ms`：平均检索或问答耗时
+- Ragas：`faithfulness`、`answer_relevancy`、`context_recall` 作为语义诊断指标，不进入默认质量门禁
 
 ## Testing
 
@@ -453,24 +501,33 @@ npm run build
 | `RAG_MILVUS_HOST`                | `localhost`                          | Milvus 服务地址                            |
 | `RAG_MILVUS_PORT`                | `19530`                              | Milvus 服务端口                            |
 | `RAG_MILVUS_COLLECTION`          | `finrag_leaf_nodes`                  | Milvus leaf node collection                |
-| `RAG_EMBEDDING_MODEL`            | `text-embedding-v4`                  | DashScope embedding 模型名                 |
-| `RAG_LLM_MODEL`                  | `qwen-max`                           | 生成模型                                   |
-| `RAG_TOP_K`                      | `3`                                  | 最终返回证据数量                           |
-| `RAG_RETRIEVAL_CANDIDATE_K`      | `10`                                 | 初始召回候选数量                           |
+| `EMBEDDING_BASE_URL`             | `https://api.siliconflow.cn/v1`      | OpenAI-compatible embedding endpoint       |
+| `EMBEDDING_API_KEY`              | ``                                   | OpenAI-compatible embedding API key        |
+| `RAG_EMBEDDING_MODEL`            | `BAAI/bge-m3`                        | Dense embedding 模型名                     |
+| `RAG_LLM_MODEL`                  | `qwen3.7-max`                        | 生成模型                                   |
+| `RAG_TOP_K`                      | `5`                                  | 最终返回证据数量                           |
+| `RAG_RETRIEVAL_CANDIDATE_K`      | `12`                                 | 初始召回候选数量                           |
 | `RAG_RRF_K`                      | `60`                                 | Milvus hybrid RRFRanker 的 `k` 参数      |
 | `RAG_RETRIEVAL_STRATEGY`         | `llamaindex_router`                  | 固定检索编排策略                           |
-| `RAG_SCORE_THRESHOLD`            | `0.0`                                | 检索候选分数过滤阈值                       |
+| `RAG_SCORE_THRESHOLD`            | `0.01`                               | 检索候选分数过滤阈值                       |
 | `RAG_RERANKER_PROVIDER`          | `none`                               | Reranker 类型：`none / jina`             |
 | `RAG_RERANKER_MODEL`             | `jina-reranker-v2-base-multilingual` | Jina-compatible rerank 模型                |
 | `RAG_RERANKER_ENDPOINT`          | ``                                     | Jina-compatible HTTP rerank endpoint       |
 | `RAG_RERANKER_API_KEY`           | ``                                     | rerank endpoint API key                    |
 | `RAG_RERANKER_TOP_N`             | `3`                                  | rerank 后截断数量                          |
-| `RAG_AUTO_MERGE_RATIO_THRESHOLD` | `0.5`                                | LlamaIndex AutoMergingRetriever ratio 阈值 |
-| `RAG_CONTEXT_TOKEN_BUDGET`       | `2400`                               | LlamaIndex node postprocessor 上下文预算   |
-| `RAG_NEIGHBOR_WINDOW`            | `1`                                  | 命中节点前后相邻节点扩展数量               |
+| `RAG_AUTO_MERGE_RATIO_THRESHOLD` | `0.45`                               | LlamaIndex AutoMergingRetriever ratio 阈值 |
+| `RAG_CONTEXT_TOKEN_BUDGET`       | `3000`                               | LlamaIndex node postprocessor 上下文预算   |
+| `RAG_NEIGHBOR_WINDOW`            | `0`                                  | 命中节点前后相邻节点扩展数量               |
 | `RAG_MAX_UPLOAD_BYTES`           | `20971520`                           | 单个上传文件最大字节数                     |
 | `RAG_TEMPERATURE`                | `0.1`                                | 生成温度                                   |
 | `RAG_MAX_TOKENS`                 | `2048`                               | 生成长度上限                               |
+| `RAGAS_BASE_URL`                 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Ragas 评测 LLM endpoint        |
+| `RAGAS_API_KEY`                  | ``                                   | Ragas 评测 LLM API key                    |
+| `RAGAS_LLM_MODEL`                | `qwen3.7-max`                        | Ragas 评测 LLM 模型                       |
+| `RAGAS_EMBEDDING_BASE_URL`       | `https://api.siliconflow.cn/v1`      | Ragas answer_relevancy embedding endpoint |
+| `RAGAS_EMBEDDING_API_KEY`        | ``                                   | Ragas embedding API key                   |
+| `RAGAS_EMBEDDING_MODEL`          | `BAAI/bge-m3`                        | Ragas embedding 模型                      |
+| `RAGAS_ANSWER_RELEVANCY_STRICTNESS` | `1`                               | Ragas answer_relevancy 单题采样次数       |
 
 ## Operations
 

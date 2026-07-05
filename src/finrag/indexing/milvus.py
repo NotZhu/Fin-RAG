@@ -1,14 +1,18 @@
-"""FinRAG 的 LlamaIndex + Milvus dense/BM25 hybrid 索引构建模块"""
+"""Milvus 索引构建模块"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.bridge.pydantic import Field
 from llama_index.core.schema import TextNode
 from llama_index.core.storage.docstore.types import BaseDocumentStore
 from llama_index.core.vector_stores import MetadataFilter, MetadataFilters
@@ -84,25 +88,87 @@ DENSE_SEARCH_CONFIG = { # Dense 向量检索配置
 }
 SPARSE_INDEX_CONFIG = { # Sparse 向量索引配置
     "index_type": "SPARSE_INVERTED_INDEX",
-    "metric_type": "BM25",
+    "metric_type": "BM25", # Milvus 2.5 built-in BM25 function 对应的 sparse index 度量
 }
-DASHSCOPE_EMBEDDING_DIMENSIONS = { # DashScope embedding 模型到向量维度的映射
-    "text-embedding-v4": 1024,
+KNOWN_EMBEDDING_DIMENSIONS = { # 常用 embedding 模型到向量维度的映射
+    "BAAI/bge-m3": 1024,
 }
-DASHSCOPE_EMBED_BATCH_SIZE = 10 # DashScope embedding 批量请求大小
+EMBED_BATCH_SIZE = 10 # embedding 批量请求大小
+
+
+class OpenAICompatibleEmbedding(BaseEmbedding):
+    """OpenAI-compatible embedding endpoint 的 LlamaIndex embedding 模型"""
+    api_key: str = Field(default="", exclude=True)
+    base_url: str = ""
+    embed_dim: Optional[int] = None
+    timeout: float = 60.0
+
+    def _embedding_endpoint(self) -> str:
+        return f"{self.base_url.rstrip('/')}/embeddings"
+
+    def _request_embeddings(self, texts: List[str]) -> List[List[float]]:
+        payload = json.dumps({"model": self.model_name, "input": texts}).encode("utf-8")
+        request = urlrequest.Request(
+            self._embedding_endpoint(),
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(request, timeout=self.timeout) as response:
+                response_body = response.read().decode("utf-8")
+        except urlerror.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI-compatible embedding 请求失败: HTTP {exc.code} {body}") from exc
+        except urlerror.URLError as exc:
+            raise RuntimeError(f"OpenAI-compatible embedding 请求失败: {exc}") from exc
+        try:
+            data = json.loads(response_body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("OpenAI-compatible embedding 返回了非法 JSON") from exc
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            raise RuntimeError("OpenAI-compatible embedding 响应缺少 data 列表")
+        rows = sorted(rows, key=lambda row: int(row.get("index", 0)) if isinstance(row, dict) else 0)
+        embeddings: List[List[float]] = []
+        for row in rows:
+            embedding = row.get("embedding") if isinstance(row, dict) else None
+            if not isinstance(embedding, list) or not embedding:
+                raise RuntimeError("OpenAI-compatible embedding 响应缺少有效 embedding")
+            embeddings.append([float(value) for value in embedding])
+        if len(embeddings) != len(texts):
+            raise RuntimeError("OpenAI-compatible embedding 返回数量与输入数量不一致")
+        return embeddings
+
+    def _get_query_embedding(self, query: str) -> List[float]:
+        return self._request_embeddings([query])[0]
+
+    async def _aget_query_embedding(self, query: str) -> List[float]:
+        return self._get_query_embedding(query)
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        return self._request_embeddings([text])[0]
+
+    def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return self._request_embeddings(texts)
 
 
 class IndexConstructionModule:
-    """构建和加载 LlamaIndex Milvus dense/BM25 hybrid 向量索引"""
+    """构建和加载 Milvus 索引"""
 
     def __init__(
         self,
-        model_name: str = "text-embedding-v4",
+        model_name: str = "BAAI/bge-m3",
         *,
         collection_name: str = MILVUS_COLLECTION_NAME,
         milvus_uri: Optional[str] = None,
         milvus_host: str = "localhost",
         milvus_port: int = 19530,
+        embedding_base_url: str = "",
+        embedding_api_key: str = "",
         embed_model: Optional[BaseEmbedding] = None,
         manifest_store: Optional[Any] = None,
         enable_sparse: bool = True,
@@ -116,6 +182,8 @@ class IndexConstructionModule:
             milvus_uri: 可选 Milvus URI，未提供时由 host 和 port 生成
             milvus_host: Milvus 主机名
             milvus_port: Milvus 端口
+            embedding_base_url: OpenAI 兼容 embedding endpoint
+            embedding_api_key: OpenAI 兼容 embedding API key
             embed_model: 可直接注入的 LlamaIndex embedding 模型
             manifest_store: 索引清单持久化存储
             enable_sparse: 是否启用 Milvus 内置 BM25 sparse 向量
@@ -125,8 +193,10 @@ class IndexConstructionModule:
         self.collection_name = collection_name # Milvus collection 名称
         self.milvus_uri = milvus_uri or f"http://{milvus_host}:{int(milvus_port)}" # Milvus URI
         self.manifest_store = manifest_store # 索引清单持久化存储
+        self.embedding_base_url = str(embedding_base_url or os.getenv("EMBEDDING_BASE_URL", "")).strip()
+        self.embedding_api_key = str(embedding_api_key or os.getenv("EMBEDDING_API_KEY", "")).strip()
         self.enable_sparse = bool(enable_sparse) # 是否启用 Milvus 内置 BM25 sparse 向量
-        self.sparse_embedding_function = self._build_sparse_embedding_function() if self.enable_sparse else None
+        self.sparse_embedding_function = self._build_sparse_embedding_function() if self.enable_sparse else None # Milvus 内置 BM25 sparse 向量函数
         self.rrf_k = int(rrf_k) # RRF 算法参数
         self.embed_model = embed_model or self._build_embedding_model() # LlamaIndex embedding 模型实例
         self.embedding_dimensions = self._infer_embedding_dimensions(self.embed_model) or self._known_embedding_dimensions(self.model_name) # 向量维度
@@ -146,26 +216,22 @@ class IndexConstructionModule:
 
     def _build_embedding_model(self) -> BaseEmbedding:
         """
-        根据配置创建 embedding 模型
+        根据 OpenAI 兼容配置创建 embedding 模型
         Returns:
             LlamaIndex embedding 模型实例
         """
-        api_key = os.getenv("DASHSCOPE_API_KEY")
-        if not api_key:
+        if not self.embedding_base_url or not self.embedding_api_key:
             raise RuntimeError(
                 "embedding_model="
-                f"{self.model_name!r} 需要配置 DASHSCOPE_API_KEY，请配置 DASHSCOPE_API_KEY 或显式注入 embedding 模型"
+                f"{self.model_name!r} 需要配置 EMBEDDING_BASE_URL 和 EMBEDDING_API_KEY"
             )
-        try:
-            from llama_index.embeddings.dashscope import DashScopeEmbedding
-            # 初始化 DashScopeEmbedding 模型实例
-            return DashScopeEmbedding(
-                model_name=self.model_name,
-                api_key=api_key,
-                embed_batch_size=DASHSCOPE_EMBED_BATCH_SIZE, # 批量大小
-            )
-        except Exception as exc:
-            raise RuntimeError(f"DashScope embedding 初始化失败，模型为 {self.model_name!r}: {exc}") from exc
+        return OpenAICompatibleEmbedding(
+            model_name=self.model_name,
+            api_key=self.embedding_api_key,
+            base_url=self.embedding_base_url,
+            embed_dim=self._known_embedding_dimensions(self.model_name),
+            embed_batch_size=EMBED_BATCH_SIZE,
+        )
 
     @staticmethod
     def _infer_embedding_dimensions(embed_model: BaseEmbedding) -> Optional[int]:
@@ -195,7 +261,7 @@ class IndexConstructionModule:
         Returns:
             默认维度，未知模型返回 None
         """
-        return DASHSCOPE_EMBEDDING_DIMENSIONS.get(str(model_name))
+        return KNOWN_EMBEDDING_DIMENSIONS.get(str(model_name))
 
     def build_manifest(
         self,

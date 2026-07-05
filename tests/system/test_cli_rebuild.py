@@ -14,7 +14,7 @@ from finrag import cli
 
 requires_live_vector_stack = pytest.mark.skipif(
     os.getenv("FINRAG_RUN_INTEGRATION") != "1",
-    reason="需要运行中的 Milvus 和 DashScope embedding",
+    reason="需要运行中的 Milvus 和 OpenAI 兼容 embedding 服务",
 )
 
 
@@ -84,24 +84,11 @@ def test_cli_import_does_not_require_project_root_on_pythonpath(tmp_path):
     assert "ok" in result.stdout
 
 
-def test_cli_eval_invokes_ragas_evaluation(monkeypatch, tmp_path, capsys):
-    eval_path = tmp_path / "eval.jsonl"
-    report_path = tmp_path / "report.json"
-    calls = {}
+def test_cli_eval_subcommand_is_not_registered():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["eval", "--dataset", "eval.jsonl"])
 
-    def fake_run(args):
-        calls["args"] = args
-        return SimpleNamespace(provider="ragas", rows=[{"question": "q"}])
-
-    monkeypatch.setattr(cli, "run_evaluation_report", fake_run)
-
-    exit_code = cli.main(["eval", "--dataset", str(eval_path), "--output", str(report_path)])
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert calls["args"].dataset == eval_path
-    assert calls["args"].output == report_path
-    assert "provider=ragas" in output
+    assert exc_info.value.code == 2
 
 
 def test_rebuild_from_sources_ignores_existing_registry_records(monkeypatch, tmp_path):

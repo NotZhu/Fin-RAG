@@ -46,10 +46,11 @@ def load_docling_documents(
             )
             metadata["parser_name"] = "docling"
             documents.append(Document(text=text, metadata=metadata))
-        return documents
+        if documents:
+            return documents
     except Exception as exc:
         logger.warning("Docling 解析失败: %s, error=%s", source, exc)
-        return []
+    return []
 
 
 def _make_docling_reader() -> Any:
